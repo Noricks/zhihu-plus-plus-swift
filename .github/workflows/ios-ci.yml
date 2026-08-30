@@ -42,7 +42,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Report build environment
         run: |
@@ -96,17 +96,16 @@ jobs:
             -project "$PROJECT_PATH" \
             -scheme "$SCHEME" \
             -configuration Debug \
-            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID,arch=arm64" \
             -derivedDataPath "$RUNNER_TEMP/DerivedData-Tests" \
             -resultBundlePath "$RUNNER_TEMP/iosAppTests.xcresult" \
             -parallel-testing-enabled NO \
-            CODE_SIGNING_ALLOWED=NO \
             test \
             2>&1 | tee "$RUNNER_TEMP/xcodebuild-test.log"
 
       - name: Upload test diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ios-test-diagnostics
           path: |
@@ -122,7 +121,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Report build environment
         run: |
@@ -175,7 +174,7 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload unsigned app and IPA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zhihu-plus-plus-unsigned
           path: |
@@ -186,7 +185,7 @@ jobs:
 
       - name: Upload unsigned build log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ios-unsigned-build-log
           path: ${{ runner.temp }}/xcodebuild-unsigned.log
