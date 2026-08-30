@@ -6,8 +6,8 @@ import Foundation
 /// verified. Adding them later extends this domain model rather than the shell's
 /// bottom-tab representation.
 enum HomeChannel: String, CaseIterable, Hashable, Identifiable {
-    case recommendation
     case following
+    case recommendation
     case hot
     case daily
 

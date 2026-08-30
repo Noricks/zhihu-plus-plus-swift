@@ -339,15 +339,15 @@ final class NativeShellPreferencesTests: XCTestCase {
     }
 
     func testHomeChannelsHaveFixedProductOrder() {
-        XCTAssertEqual(HomeChannel.allCases, [.recommendation, .following, .hot, .daily])
+        XCTAssertEqual(HomeChannel.allCases, [.following, .recommendation, .hot, .daily])
         XCTAssertEqual(HomeChannel.allCases.map(\.id), [
-            "recommendation",
             "following",
+            "recommendation",
             "hot",
             "daily",
         ])
         XCTAssertEqual(HomeChannel.allCases.map(\.id), HomeChannel.allCases.map(\.rawValue))
-        XCTAssertEqual(HomeChannel.allCases.map(\.title), ["推荐", "关注", "热榜", "日报"])
+        XCTAssertEqual(HomeChannel.allCases.map(\.title), ["关注", "推荐", "热榜", "日报"])
     }
 
     func testChannelSwipeRequiresHorizontalIntentAndEnoughDistance() {
@@ -498,22 +498,6 @@ final class NativeShellPreferencesTests: XCTestCase {
         ))
     }
 
-    func testHomeTopBarHasOnlyCreationAndNotificationControls() {
-        XCTAssertEqual(HomeTopBarControl.visibleControls, [.creation, .notifications])
-    }
-
-    func testHomeNotificationIndicatorOnlyShowsDotForUnreadNotifications() {
-        let empty = HomeNotificationIndicatorPresentation(unreadCount: 0)
-        XCTAssertFalse(empty.showsDot)
-        XCTAssertEqual(empty.accessibilityLabel, "通知")
-        XCTAssertEqual(empty.accessibilityValue, "无未读通知")
-
-        let unread = HomeNotificationIndicatorPresentation(unreadCount: 3)
-        XCTAssertTrue(unread.showsDot)
-        XCTAssertEqual(unread.accessibilityLabel, "通知，3 条未读")
-        XCTAssertEqual(unread.accessibilityValue, "3 条未读")
-    }
-
     func testHomeTabDoubleTapRequiresTwoReselectEventsAndTriggersOncePerPair() {
         var gate = NativeHomeTabDoubleTapGate(maximumInterval: 0.5)
 
@@ -658,7 +642,6 @@ final class NativeShellPreferencesTests: XCTestCase {
 
     func testHomeHeaderStaysPinnedAtCompactHeightWithoutMovingListViewport() {
         XCTAssertEqual(NativeHomeHeaderLayoutPolicy.horizontalContentInset, 14)
-        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.actionBarHeight, 48)
         XCTAssertEqual(NativeHomeHeaderLayoutPolicy.channelSelectorHeight, 48)
         XCTAssertEqual(NativeHomeHeaderLayoutPolicy.expandedHeaderHeight, 48)
 

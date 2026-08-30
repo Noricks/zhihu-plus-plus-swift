@@ -52,12 +52,9 @@ struct HomeChannelsNativeView: View {
 
     let isOperationallyVisible: Bool
     let doubleTapRefreshRequest: UInt
-    let notificationUnreadCount: Int
     let onOpenFeed: (FeedItemRoute) -> Void
     let onOpenPerson: (PersonRoutePayload) -> Void
     let onOpenDaily: (DailyStoryDestination) -> Void
-    let onOpenCreation: () -> Void
-    let onOpenNotifications: () -> Void
 
     init(
         selectedChannelID: Binding<HomeChannel.ID>,
@@ -67,12 +64,9 @@ struct HomeChannelsNativeView: View {
         dailyStore: DailyNativeStore,
         doubleTapRefreshRequest: UInt,
         isOperationallyVisible: Bool,
-        notificationUnreadCount: Int,
         onOpenFeed: @escaping (FeedItemRoute) -> Void,
         onOpenPerson: @escaping (PersonRoutePayload) -> Void,
-        onOpenDaily: @escaping (DailyStoryDestination) -> Void,
-        onOpenCreation: @escaping () -> Void,
-        onOpenNotifications: @escaping () -> Void
+        onOpenDaily: @escaping (DailyStoryDestination) -> Void
     ) {
         _selectedChannelID = selectedChannelID
         _recommendationStore = ObservedObject(wrappedValue: recommendationStore)
@@ -82,12 +76,9 @@ struct HomeChannelsNativeView: View {
         _lastSelectedChannelID = State(initialValue: selectedChannelID.wrappedValue)
         self.doubleTapRefreshRequest = doubleTapRefreshRequest
         self.isOperationallyVisible = isOperationallyVisible
-        self.notificationUnreadCount = notificationUnreadCount
         self.onOpenFeed = onOpenFeed
         self.onOpenPerson = onOpenPerson
         self.onOpenDaily = onOpenDaily
-        self.onOpenCreation = onOpenCreation
-        self.onOpenNotifications = onOpenNotifications
     }
 
     var body: some View {
@@ -104,11 +95,6 @@ struct HomeChannelsNativeView: View {
             }
         ) { channel in
             channelContent(channel)
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if isOperationallyVisible {
-                homeTopBar
-            }
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
@@ -181,59 +167,6 @@ struct HomeChannelsNativeView: View {
                 scrollToTopRequest: scrollRequest(for: channel),
                 onOpen: onOpenDaily
             )
-        }
-    }
-
-    private var homeTopBar: some View {
-        HStack(spacing: 10) {
-            Spacer(minLength: 0)
-            ForEach(HomeTopBarControl.visibleControls) { control in
-                homeTopBarButton(control)
-            }
-        }
-        .padding(.horizontal, 14)
-        .frame(height: NativeHomeHeaderLayoutPolicy.actionBarHeight)
-        .background(NativeZhihuVisualStyle.backgroundColor)
-        .zIndex(10)
-        .accessibilityIdentifier("home_top_bar")
-    }
-
-    @ViewBuilder
-    private func homeTopBarButton(_ control: HomeTopBarControl) -> some View {
-        switch control {
-        case .creation:
-            Button(action: onOpenCreation) {
-                Image(systemName: "square.and.pencil")
-                    .frame(width: 44, height: 44)
-                    .contentShape(Circle())
-            }
-            .background(Color.secondary.opacity(0.1), in: Circle())
-            .accessibilityLabel("创作")
-            .accessibilityIdentifier("home_creation_entry")
-
-        case .notifications:
-            let presentation = HomeNotificationIndicatorPresentation(
-                unreadCount: notificationUnreadCount
-            )
-            Button(action: onOpenNotifications) {
-                Image(systemName: "bell")
-                    .frame(width: 44, height: 44)
-                    .contentShape(Circle())
-                    .overlay(alignment: .topTrailing) {
-                        if presentation.showsDot {
-                            Circle()
-                                .fill(.red)
-                                .frame(width: 9, height: 9)
-                                .overlay(Circle().stroke(NativeZhihuVisualStyle.backgroundColor, lineWidth: 2))
-                                .offset(x: -5, y: 5)
-                                .accessibilityHidden(true)
-                        }
-                    }
-            }
-            .background(Color.secondary.opacity(0.1), in: Circle())
-            .accessibilityLabel(presentation.accessibilityLabel)
-            .accessibilityValue(presentation.accessibilityValue)
-            .accessibilityIdentifier("home_notifications_entry")
         }
     }
 
@@ -466,30 +399,6 @@ struct HomeChannelsNativeView: View {
         }
     }
 
-}
-
-enum HomeTopBarControl: String, CaseIterable, Identifiable {
-    case creation
-    case notifications
-
-    var id: String { rawValue }
-    static let visibleControls: [HomeTopBarControl] = [.creation, .notifications]
-}
-
-struct HomeNotificationIndicatorPresentation: Equatable {
-    let unreadCount: Int
-
-    init(unreadCount: Int) {
-        self.unreadCount = max(0, unreadCount)
-    }
-
-    var showsDot: Bool { unreadCount > 0 }
-    var accessibilityLabel: String {
-        unreadCount > 0 ? "通知，\(unreadCount) 条未读" : "通知"
-    }
-    var accessibilityValue: String {
-        unreadCount > 0 ? "\(unreadCount) 条未读" : "无未读通知"
-    }
 }
 
 enum HomeChannelRefreshStatusText {

@@ -519,12 +519,9 @@ struct NativeAppShell: View {
                 isOperationallyVisible: isAppUnlocked
                     && selectedTab == .home
                     && navigation.isAtRoot(in: .home),
-                notificationUnreadCount: notifications.unreadCount,
                 onOpenFeed: openFeed,
                 onOpenPerson: { navigate(.person($0)) },
-                onOpenDaily: { handleDailyDestination($0, in: .home) },
-                onOpenCreation: { navigate(.writePin) },
-                onOpenNotifications: { navigate(.notifications) }
+                onOpenDaily: { handleDailyDestination($0, in: .home) }
             )
         case .follow, .hot, .daily:
             EmptyView()
