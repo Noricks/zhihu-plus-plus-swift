@@ -8,28 +8,11 @@ on:
         required: false
         default: com.github.noricks.zhplus.swift
         type: string
-      publish_release:
-        description: Publish the successful build as a GitHub Release
-        required: true
-        default: false
-        type: boolean
-      release_tag:
-        description: Semantic version tag used when publishing, for example v0.1.0
-        required: false
-        default: v0.1.0
-        type: string
-      prerelease:
-        description: Mark the GitHub Release as a prerelease
-        required: true
-        default: true
-        type: boolean
   push:
     branches:
       - main
       - develop
       - "codex/**"
-    tags:
-      - "v*"
   pull_request:
     branches:
       - main
@@ -39,7 +22,7 @@ permissions:
 
 concurrency:
   group: ios-ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -191,6 +174,7 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload unsigned app and IPA
+        id: unsigned_artifact
         uses: actions/upload-artifact@v7
         with:
           name: zhihu-plus-plus-unsigned
@@ -200,6 +184,18 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Add artifact download link
+        env:
+          ARTIFACT_URL: ${{ steps.unsigned_artifact.outputs.artifact-url }}
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACT_URL"
+          {
+            echo "### Download the unsigned IPA"
+            echo "[Download zhihu-plus-plus-unsigned]($ARTIFACT_URL)"
+            echo "GitHub login is required. This artifact expires after 7 days."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Upload unsigned build log
         if: always()
         uses: actions/upload-artifact@v7
@@ -208,172 +204,3 @@ jobs:
           path: ${{ runner.temp }}/xcodebuild-unsigned.log
           if-no-files-found: warn
           retention-days: 7
-
-  release:
-    name: Publish GitHub Release
-    if: >-
-      startsWith(github.ref, 'refs/tags/v') ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish_release)
-    needs:
-      - test
-      - unsigned-ipa
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-
-    steps:
-      - name: Check out source metadata
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Resolve and validate release metadata
-        id: metadata
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          REQUESTED_BUNDLE_ID: ${{ inputs.bundle_id }}
-          REQUESTED_TAG: ${{ inputs.release_tag }}
-          REQUESTED_PRERELEASE: ${{ inputs.prerelease }}
-        run: |
-          set -euo pipefail
-
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            tag_name="$REQUESTED_TAG"
-            prerelease="$REQUESTED_PRERELEASE"
-            expected_ref="refs/heads/$DEFAULT_BRANCH"
-
-            if [[ "$GITHUB_REF" != "$expected_ref" ]]; then
-              echo "Manual releases must run from $expected_ref, not $GITHUB_REF" >&2
-              exit 1
-            fi
-
-            if [[ "$REQUESTED_BUNDLE_ID" != "com.github.noricks.zhplus.swift" ]]; then
-              echo "Published builds must use the stable bundle identifier" >&2
-              exit 1
-            fi
-          else
-            tag_name="$GITHUB_REF_NAME"
-            if [[ "$tag_name" == *-* ]]; then
-              prerelease=true
-            else
-              prerelease=false
-            fi
-          fi
-
-          if [[ ! "$tag_name" =~ ^v[0-9]+([.][0-9]+){2}([-+][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Release tag must look like v1.2.3 or v1.2.3-beta.1" >&2
-            exit 1
-          fi
-
-          release_commit="$(git rev-parse "$GITHUB_SHA^{commit}")"
-          git fetch --no-tags origin "$DEFAULT_BRANCH"
-          if ! git merge-base --is-ancestor "$release_commit" "origin/$DEFAULT_BRANCH"; then
-            echo "Release commit must be contained in $DEFAULT_BRANCH" >&2
-            exit 1
-          fi
-
-          if existing_commit="$(git rev-parse -q --verify "refs/tags/$tag_name^{commit}")"; then
-            if [[ "$existing_commit" != "$release_commit" ]]; then
-              echo "Existing tag $tag_name points to a different commit" >&2
-              exit 1
-            fi
-          fi
-
-          {
-            echo "tag_name=$tag_name"
-            echo "prerelease=$prerelease"
-            echo "release_commit=$release_commit"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Ensure release does not already exist
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ steps.metadata.outputs.tag_name }}
-        run: |
-          set -euo pipefail
-          if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG_NAME already exists; refusing to overwrite published binaries" >&2
-            exit 1
-          fi
-
-      - name: Download validated unsigned artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: zhihu-plus-plus-unsigned
-          path: ${{ runner.temp }}/release-assets
-
-      - name: Package release assets
-        id: package
-        env:
-          TAG_NAME: ${{ steps.metadata.outputs.tag_name }}
-        run: |
-          set -euo pipefail
-          asset_dir="$RUNNER_TEMP/release-assets"
-          source_ipa="$asset_dir/ZhihuPlusPlus-SideStore.ipa"
-          release_ipa="$asset_dir/ZhihuPlusPlus.ipa"
-
-          test -s "$source_ipa"
-          test -s "$asset_dir/iosApp-unsigned.app.zip"
-          unzip -t "$source_ipa"
-          mv "$source_ipa" "$release_ipa"
-
-          cd "$asset_dir"
-          sha256sum \
-            ZhihuPlusPlus.ipa \
-            iosApp-unsigned.app.zip \
-            > SHA256SUMS
-
-          download_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG_NAME/ZhihuPlusPlus.ipa"
-          cat > release-notes.md <<EOF
-          This release contains an **unsigned** iOS build. SideStore signs it locally with your Apple Account before installation.
-
-          - Bundle ID: com.github.noricks.zhplus.swift
-          - Source commit: $GITHUB_SHA
-
-          **Direct IPA:** $download_url
-
-          On iPhone, download ZhihuPlusPlus.ipa, enable LocalDevVPN, then open the file with SideStore. A computer is not required after SideStore's initial setup.
-          EOF
-
-          {
-            echo "asset_dir=$asset_dir"
-            echo "download_url=$download_url"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ steps.metadata.outputs.tag_name }}
-          PRERELEASE: ${{ steps.metadata.outputs.prerelease }}
-          RELEASE_COMMIT: ${{ steps.metadata.outputs.release_commit }}
-          ASSET_DIR: ${{ steps.package.outputs.asset_dir }}
-        run: |
-          set -euo pipefail
-          release_args=(
-            "$TAG_NAME"
-            "$ASSET_DIR/ZhihuPlusPlus.ipa"
-            "$ASSET_DIR/iosApp-unsigned.app.zip"
-            "$ASSET_DIR/SHA256SUMS"
-            --repo "$GITHUB_REPOSITORY"
-            --target "$RELEASE_COMMIT"
-            --title "Zhihu++ $TAG_NAME"
-            --notes-file "$ASSET_DIR/release-notes.md"
-          )
-
-          if [[ "$PRERELEASE" == "true" ]]; then
-            release_args+=(--prerelease)
-          fi
-
-          gh release create "${release_args[@]}"
-
-      - name: Add release links to job summary
-        env:
-          TAG_NAME: ${{ steps.metadata.outputs.tag_name }}
-          DOWNLOAD_URL: ${{ steps.package.outputs.download_url }}
-        run: |
-          set -euo pipefail
-          {
-            echo "Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG_NAME"
-            echo "Direct IPA: $DOWNLOAD_URL"
-          } | tee -a "$GITHUB_STEP_SUMMARY"
