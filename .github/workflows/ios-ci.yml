@@ -42,7 +42,9 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Report build environment
         run: |
@@ -105,7 +107,7 @@ jobs:
 
       - name: Upload test diagnostics
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ios-test-diagnostics
           path: |
@@ -121,7 +123,9 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Report build environment
         run: |
@@ -201,7 +205,7 @@ jobs:
 
       - name: Upload versioned IPA
         id: ipa_artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ steps.artifact_metadata.outputs.artifact_name }}
           path: ${{ steps.artifact_metadata.outputs.ipa_path }}
@@ -210,7 +214,7 @@ jobs:
           compression-level: 0
 
       - name: Upload versioned app bundle
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ steps.artifact_metadata.outputs.app_artifact_name }}
           path: ${{ steps.artifact_metadata.outputs.app_path }}
@@ -235,7 +239,7 @@ jobs:
 
       - name: Upload unsigned build log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ios-unsigned-build-log
           path: ${{ runner.temp }}/xcodebuild-unsigned.log

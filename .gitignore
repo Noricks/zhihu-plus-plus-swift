@@ -13,7 +13,10 @@ xcuserdata/
 # iOS distribution and signing
 *.ipa
 *.mobileprovision
+*.mobiledevicepairing
 *.p12
+*.pfx
+*.p8
 *.cer
 *.key
 *.pem
@@ -29,6 +32,24 @@ Package.resolved
 !.env.example
 local.properties
 .secret/
+*.har
+*.log
+*.sqlite
+*.sqlite-*
+*.db
+*.realm
+cookies.json
+credentials.json
+account.json
+accounts.json
+session.json
+auth.json
+ExportOptions.plist
+*pairing*.plist
+*credential*.plist
+*secret*.plist
+*secrets*.xcconfig
+*local*.xcconfig
 
 # Repository build output
 build/
