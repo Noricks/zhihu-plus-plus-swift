@@ -1,0 +1,246 @@
+name: iOS CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: Bundle identifier for the unsigned device artifact
+        required: false
+        default: com.github.noricks.zhplus.swift
+        type: string
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+  PROJECT_PATH: iosApp/iosApp.xcodeproj
+  SCHEME: iosApp
+  BUNDLE_ID: ${{ inputs.bundle_id || 'com.github.noricks.zhplus.swift' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: Simulator tests
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Report build environment
+        run: |
+          set -euo pipefail
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphonesimulator --show-sdk-version
+          xcrun simctl list runtimes
+
+      - name: Run project preflight
+        run: |
+          set -euo pipefail
+          SKIP_TEAM_ID_WARNING=1 ./iosApp/scripts/preflight.sh
+
+      - name: Select latest available iPhone simulator
+        run: |
+          set -euo pipefail
+          runtime_id="$(xcrun simctl list runtimes -j | jq -r '
+            [.runtimes[]
+              | select(.isAvailable == true)
+              | select(.identifier | contains(".iOS-"))]
+            | sort_by(.version | split(".") | map(tonumber))
+            | last
+            | .identifier // empty
+          ')"
+          test -n "$runtime_id"
+
+          simulator_json="$(xcrun simctl list devices available -j)"
+          simulator_udid="$(jq -r --arg runtime "$runtime_id" '
+            [(.devices[$runtime] // [])[]
+              | select(.isAvailable == true)
+              | select(.name | startswith("iPhone"))]
+            | first
+            | .udid // empty
+          ' <<<"$simulator_json")"
+          simulator_name="$(jq -r --arg runtime "$runtime_id" --arg udid "$simulator_udid" '
+            [(.devices[$runtime] // [])[] | select(.udid == $udid)]
+            | first
+            | .name // empty
+          ' <<<"$simulator_json")"
+          test -n "$simulator_udid"
+
+          echo "SIMULATOR_UDID=$simulator_udid" >> "$GITHUB_ENV"
+          echo "Selected $simulator_name ($simulator_udid) on $runtime_id" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Build and run unit tests
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project "$PROJECT_PATH" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID,arch=arm64" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData-Tests" \
+            -resultBundlePath "$RUNNER_TEMP/iosAppTests.xcresult" \
+            -parallel-testing-enabled NO \
+            test \
+            2>&1 | tee "$RUNNER_TEMP/xcodebuild-test.log"
+
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ios-test-diagnostics
+          path: |
+            ${{ runner.temp }}/xcodebuild-test.log
+            ${{ runner.temp }}/iosAppTests.xcresult
+          if-no-files-found: warn
+          retention-days: 7
+
+  unsigned-ipa:
+    name: Unsigned app and IPA
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Report build environment
+        run: |
+          set -euo pipefail
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Build unsigned device app and IPA
+        run: |
+          set -euo pipefail
+          OUTPUT_DIR="$RUNNER_TEMP/sidestore" \
+          DERIVED_DATA_PATH="$RUNNER_TEMP/sidestore/DerivedData" \
+          IPA_PATH="$RUNNER_TEMP/sidestore/ZhihuPlusPlus-SideStore.ipa" \
+          BUNDLE_ID="$BUNDLE_ID" \
+            ./iosApp/scripts/build-sidestore-ipa.sh \
+            2>&1 | tee "$RUNNER_TEMP/xcodebuild-unsigned.log"
+
+      - name: Validate and version unsigned artifacts
+        id: artifact_metadata
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          ipa_path="$RUNNER_TEMP/sidestore/ZhihuPlusPlus-SideStore.ipa"
+          app_path="$RUNNER_TEMP/sidestore/DerivedData/Build/Products/Release-iphoneos/iosApp.app"
+
+          test -s "$ipa_path"
+          test -d "$app_path"
+          unzip -t "$ipa_path"
+          app_count="$(zipinfo -1 "$ipa_path" | awk -F/ '$1 == "Payload" && $2 ~ /[.]app$/ { print $2 }' | sort -u | wc -l | tr -d ' ')"
+          test "$app_count" = "1"
+
+          actual_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")"
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Info.plist")"
+          build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Info.plist")"
+          test "$actual_bundle_id" = "$BUNDLE_ID"
+
+          if find "$app_path" -type d -name _CodeSignature -print -quit | grep -q .; then
+            echo "Unexpected code signature found in unsigned app" >&2
+            exit 1
+          fi
+
+          short_sha="${GITHUB_SHA:0:7}"
+          if [[ -n "$PR_NUMBER" ]]; then
+            source_label="pr$PR_NUMBER"
+          else
+            source_label="run$GITHUB_RUN_NUMBER"
+          fi
+
+          version_label="v${version}-b${build}-${source_label}-${short_sha}"
+          ipa_filename="ZhihuPlusPlus-${version_label}.ipa"
+          app_filename="ZhihuPlusPlus-${version_label}-unsigned.app.zip"
+          versioned_ipa="$RUNNER_TEMP/sidestore/$ipa_filename"
+          versioned_app="$RUNNER_TEMP/sidestore/$app_filename"
+
+          mv "$ipa_path" "$versioned_ipa"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$app_path" \
+            "$versioned_app"
+
+          {
+            echo "artifact_name=ZhihuPlusPlus-${version_label}-IPA"
+            echo "ipa_filename=$ipa_filename"
+            echo "ipa_path=$versioned_ipa"
+            echo "app_artifact_name=ZhihuPlusPlus-${version_label}-App"
+            echo "app_path=$versioned_app"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "Unsigned artifact validated"
+            echo "- Bundle ID: $actual_bundle_id"
+            echo "- Version: $version ($build)"
+            echo "- IPA: $ipa_filename"
+            echo "- IPA bytes: $(stat -f%z "$versioned_ipa")"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload versioned IPA
+        id: ipa_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.artifact_metadata.outputs.artifact_name }}
+          path: ${{ steps.artifact_metadata.outputs.ipa_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload versioned app bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.artifact_metadata.outputs.app_artifact_name }}
+          path: ${{ steps.artifact_metadata.outputs.app_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Add artifact download link
+        env:
+          ARTIFACT_NAME: ${{ steps.artifact_metadata.outputs.artifact_name }}
+          ARTIFACT_URL: ${{ steps.ipa_artifact.outputs.artifact-url }}
+          IPA_FILENAME: ${{ steps.artifact_metadata.outputs.ipa_filename }}
+        run: |
+          set -euo pipefail
+          test -n "$ARTIFACT_URL"
+          {
+            echo "### Download the unsigned IPA"
+            echo "[Download $ARTIFACT_NAME]($ARTIFACT_URL)"
+            echo "The downloaded ZIP contains only $IPA_FILENAME."
+            echo "GitHub login is required. The artifact expires after 7 days."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned build log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ios-unsigned-build-log
+          path: ${{ runner.temp }}/xcodebuild-unsigned.log
+          if-no-files-found: warn
+          retention-days: 7

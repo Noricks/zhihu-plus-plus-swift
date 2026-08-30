@@ -21,13 +21,4 @@ enum HomeChannel: String, CaseIterable, Hashable, Identifiable {
         case .daily: return "日报"
         }
     }
-
-    var systemImage: String {
-        switch self {
-        case .recommendation: return "sparkles"
-        case .following: return "person.2.fill"
-        case .hot: return "flame.fill"
-        case .daily: return "newspaper.fill"
-        }
-    }
 }
