@@ -193,7 +193,7 @@ struct HomeChannelsNativeView: View {
         }
         .padding(.horizontal, 14)
         .frame(height: NativeHomeHeaderLayoutPolicy.actionBarHeight)
-        .background(Color(uiColor: .systemBackground))
+        .background(NativeZhihuVisualStyle.backgroundColor)
         .zIndex(10)
         .accessibilityIdentifier("home_top_bar")
     }
@@ -224,7 +224,7 @@ struct HomeChannelsNativeView: View {
                             Circle()
                                 .fill(.red)
                                 .frame(width: 9, height: 9)
-                                .overlay(Circle().stroke(Color(uiColor: .systemBackground), lineWidth: 2))
+                                .overlay(Circle().stroke(NativeZhihuVisualStyle.backgroundColor, lineWidth: 2))
                                 .offset(x: -5, y: 5)
                                 .accessibilityHidden(true)
                         }

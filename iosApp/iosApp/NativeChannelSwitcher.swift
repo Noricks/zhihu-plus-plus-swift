@@ -73,13 +73,17 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
             title: title,
             status: status
         )
-        .background(Color(uiColor: .systemBackground))
+        .background(NativeZhihuVisualStyle.backgroundColor)
         .frame(
             height: NativeHomeHeaderLayoutPolicy.expandedHeaderHeight,
             alignment: .top
         )
         .clipped()
-        .overlay(alignment: .bottom) { Divider() }
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(NativeZhihuVisualStyle.separatorColor)
+                .frame(height: 0.5)
+        }
         .allowsHitTesting(isEnabled)
         .environment(\.nativeChannelIsActive, isEnabled)
         .accessibilityHidden(!isEnabled)
@@ -459,7 +463,7 @@ private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
     }
 
     private var channelButtons: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 4) {
             ForEach(Array(channels.enumerated()), id: \.element.id) { index, channel in
                 let isSelected = channel.id == selection
                 Button {
@@ -479,14 +483,16 @@ private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
                                 size: 17,
                                 weight: isSelected ? .semibold : .regular
                             ))
-                            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                            .foregroundStyle(
+                                isSelected ? Color.primary : Color.primary.opacity(0.88)
+                            )
                             .fixedSize()
 
                         Capsule()
-                            .fill(isSelected ? Color.accentColor : Color.clear)
-                            .frame(width: 24, height: 3)
+                            .fill(isSelected ? Color.primary : Color.clear)
+                            .frame(width: 26, height: 4)
                     }
-                    .frame(minWidth: 58, minHeight: 44)
+                    .frame(minWidth: 54, minHeight: 44)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)

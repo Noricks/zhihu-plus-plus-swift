@@ -147,6 +147,24 @@ final class FeedInfrastructureTests: XCTestCase {
         )
     }
 
+    func testFeedMetadataProvidesOfficialStyleMetricIconsAndCountOnlyLabels() {
+        let answerMetrics = FeedItemMetadataFormatter.metrics(
+            kind: .answer,
+            details: "回答 · 23000 赞同 · 1528 评论"
+        )
+
+        XCTAssertEqual(answerMetrics.map(\.name), ["赞同", "评论"])
+        XCTAssertEqual(answerMetrics.map(\.countText), ["2.3 万", "1,528"])
+        XCTAssertEqual(answerMetrics.map(\.systemImage), ["arrowtriangle.up", "bubble.left"])
+        XCTAssertEqual(answerMetrics.map(\.displayText), ["2.3 万赞同", "1,528 评论"])
+
+        let questionMetrics = FeedItemMetadataFormatter.metrics(
+            kind: .question,
+            details: "问题 · 85 关注 · 12 回答"
+        )
+        XCTAssertEqual(questionMetrics.map(\.systemImage), ["star", "bubble.left"])
+    }
+
     func testAnswerProjectionUsesQuestionAuthorWithoutFallingBackToAnswerAuthor() throws {
         let data = Data(
             #"{"data":[{"target":{"id":42,"type":"answer","excerpt":"回答","question":{"id":7,"title":"问题","author":{"id":"asker-id","url_token":"asker","name":"提问者","avatar_url":"https://pic.zhimg.com/asker.jpg"}},"author":{"id":"answerer-id","url_token":"answerer","name":"回答者"}}}],"paging":{"is_end":true,"next":null}}"#.utf8

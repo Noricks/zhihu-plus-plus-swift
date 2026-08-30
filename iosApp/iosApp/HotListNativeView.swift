@@ -59,7 +59,9 @@ struct HotListNativeView: View {
                             onOpen: onOpen
                         )
                     }
-                    .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 18))
+                    .listRowInsets(EdgeInsets(top: 7, leading: 16, bottom: 7, trailing: 16))
+                    .listRowBackground(NativeZhihuVisualStyle.backgroundColor)
+                    .listRowSeparatorTint(NativeZhihuVisualStyle.separatorColor)
                 }
 
                 if let errorMessage = store.errorMessage {

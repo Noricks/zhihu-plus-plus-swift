@@ -8,7 +8,10 @@ struct NativeChannelTaskIdentity: Hashable {
 private struct NativeHomeFeedListLayout: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
-        content.environment(\.defaultMinListRowHeight, 1)
+        content
+            .environment(\.defaultMinListRowHeight, 1)
+            .scrollContentBackground(.hidden)
+            .background(NativeZhihuVisualStyle.backgroundColor)
     }
 }
 
@@ -57,7 +60,7 @@ struct NativeScrollToTopRequestPolicy {
 }
 
 struct NativeHomeHeaderLayoutPolicy {
-    static let horizontalContentInset: CGFloat = 20
+    static let horizontalContentInset: CGFloat = 14
     static let actionBarHeight: CGFloat = 48
     static let channelSelectorHeight: CGFloat = 48
     static let expandedHeaderHeight = channelSelectorHeight
@@ -343,7 +346,9 @@ struct HomeNativeView: View {
                         store.opened(item)
                         onOpen(route)
                     }
-                    .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
+                    .listRowInsets(EdgeInsets(top: 7, leading: 16, bottom: 7, trailing: 16))
+                    .listRowBackground(NativeZhihuVisualStyle.backgroundColor)
+                    .listRowSeparatorTint(NativeZhihuVisualStyle.separatorColor)
                 }
 
                 if let message = store.errorMessage {
@@ -487,7 +492,9 @@ struct FollowNativeView: View {
                         titleDisplayMode: .full,
                         onOpen: onOpen
                     )
-                        .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
+                        .listRowInsets(EdgeInsets(top: 7, leading: 16, bottom: 7, trailing: 16))
+                        .listRowBackground(NativeZhihuVisualStyle.backgroundColor)
+                        .listRowSeparatorTint(NativeZhihuVisualStyle.separatorColor)
                 }
 
                 if let message = store.moments.errorMessage {

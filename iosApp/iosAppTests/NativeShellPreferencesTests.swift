@@ -657,7 +657,7 @@ final class NativeShellPreferencesTests: XCTestCase {
     }
 
     func testHomeHeaderStaysPinnedAtCompactHeightWithoutMovingListViewport() {
-        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.horizontalContentInset, 20)
+        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.horizontalContentInset, 14)
         XCTAssertEqual(NativeHomeHeaderLayoutPolicy.actionBarHeight, 48)
         XCTAssertEqual(NativeHomeHeaderLayoutPolicy.channelSelectorHeight, 48)
         XCTAssertEqual(NativeHomeHeaderLayoutPolicy.expandedHeaderHeight, 48)
@@ -682,6 +682,9 @@ final class NativeShellPreferencesTests: XCTestCase {
     func testHomeFeedTitlesUseUnlimitedLinesWhileStandardRowsRemainCompact() {
         XCTAssertEqual(FeedItemTitleDisplayMode.compact.lineLimit, 2)
         XCTAssertNil(FeedItemTitleDisplayMode.full.lineLimit)
+        XCTAssertEqual(NativeZhihuVisualStyle.titlePointSize, 18)
+        XCTAssertEqual(NativeZhihuVisualStyle.summaryPointSize, 16)
+        XCTAssertEqual(NativeZhihuVisualStyle.contentSpacing, 8)
     }
 
     func testRecommendationReturnDoesNotReplayAnAlreadyHandledScrollRequest() {
