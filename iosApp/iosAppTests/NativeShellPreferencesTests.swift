@@ -718,14 +718,14 @@ final class NativeShellPreferencesTests: XCTestCase {
 
         XCTAssertEqual(
             NativeChannelSelectorScrollAlignment.alignment(
-                for: HomeChannel.recommendation.id,
+                for: HomeChannel.following.id,
                 in: channelIDs
             ),
             .leading
         )
         XCTAssertEqual(
             NativeChannelSelectorScrollAlignment.alignment(
-                for: HomeChannel.following.id,
+                for: HomeChannel.recommendation.id,
                 in: channelIDs
             ),
             .center
