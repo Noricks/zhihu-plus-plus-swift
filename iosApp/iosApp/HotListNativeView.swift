@@ -52,7 +52,12 @@ struct HotListNativeView: View {
                             .frame(minWidth: 26, alignment: .trailing)
                             .padding(.top, 5)
                             .accessibilityHidden(true)
-                        FeedItemRow(item: item, showsThumbnail: false, onOpen: onOpen)
+                        FeedItemRow(
+                            item: item,
+                            showsThumbnail: false,
+                            titleDisplayMode: .full,
+                            onOpen: onOpen
+                        )
                     }
                     .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 18))
                 }

@@ -656,11 +656,11 @@ final class NativeShellPreferencesTests: XCTestCase {
         ))
     }
 
-    func testHomeHeaderUsesRealSharedHeightWithoutMovingListViewport() {
+    func testHomeHeaderStaysPinnedAtCompactHeightWithoutMovingListViewport() {
         XCTAssertEqual(NativeHomeHeaderLayoutPolicy.horizontalContentInset, 20)
-        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.expandedTitleHeight, 76)
-        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.channelSelectorHeight, 60)
-        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.expandedHeaderHeight, 136)
+        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.actionBarHeight, 48)
+        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.channelSelectorHeight, 48)
+        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.expandedHeaderHeight, 48)
 
         for progress in stride(from: CGFloat(0), through: 1, by: 0.05) {
             XCTAssertEqual(
@@ -673,10 +673,15 @@ final class NativeShellPreferencesTests: XCTestCase {
                 NativeHomeHeaderLayoutPolicy.visibleHeaderHeight(
                     collapseProgress: progress
                 ),
-                136 * (1 - progress),
+                48,
                 accuracy: 0.001
             )
         }
+    }
+
+    func testHomeFeedTitlesUseUnlimitedLinesWhileStandardRowsRemainCompact() {
+        XCTAssertEqual(FeedItemTitleDisplayMode.compact.lineLimit, 2)
+        XCTAssertNil(FeedItemTitleDisplayMode.full.lineLimit)
     }
 
     func testRecommendationReturnDoesNotReplayAnAlreadyHandledScrollRequest() {
@@ -700,7 +705,7 @@ final class NativeShellPreferencesTests: XCTestCase {
             contentInsetTop: 20
         ), 0)
         XCTAssertEqual(NativeHomeFeedScrollMetrics.collapseProgress(
-            contentOffsetY: 48,
+            contentOffsetY: 4,
             contentInsetTop: 20
         ), 0.5, accuracy: 0.001)
         XCTAssertEqual(NativeHomeFeedScrollMetrics.collapseProgress(

@@ -97,22 +97,17 @@ struct HomeChannelsNativeView: View {
             selection: $selectedChannelID,
             isEnabled: isOperationallyVisible,
             title: \.title,
-            systemImage: \.systemImage,
             status: {
                 refreshPresentations.presentation(for: $0).statusText(
                     now: refreshStatusNow
                 )
-            },
-            collapseProgress: selectedCollapseProgress
+            }
         ) { channel in
             channelContent(channel)
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if isOperationallyVisible {
-                homeTopBar(
-                    now: refreshStatusNow,
-                    refreshPresentations: refreshPresentations
-                )
+                homeTopBar
             }
         }
         .navigationTitle("")
@@ -189,34 +184,18 @@ struct HomeChannelsNativeView: View {
         }
     }
 
-    private func homeTopBar(
-        now: Date,
-        refreshPresentations: HomeChannelRefreshPresentationMap
-    ) -> some View {
-        ZStack {
-            NativeRootCompactTitle(
-                selectedChannel.title,
-                subtitle: refreshPresentations
-                    .presentation(for: selectedChannel)
-                    .statusText(now: now),
-                collapseProgress: compactHeaderProgress
-            )
-
-            HStack(spacing: 10) {
-                Spacer(minLength: 0)
-                ForEach(HomeTopBarControl.visibleControls) { control in
-                    homeTopBarButton(control)
-                }
+    private var homeTopBar: some View {
+        HStack(spacing: 10) {
+            Spacer(minLength: 0)
+            ForEach(HomeTopBarControl.visibleControls) { control in
+                homeTopBarButton(control)
             }
-            .padding(.horizontal, 14)
         }
-        .frame(height: 52)
+        .padding(.horizontal, 14)
+        .frame(height: NativeHomeHeaderLayoutPolicy.actionBarHeight)
         .background(Color(uiColor: .systemBackground))
         .zIndex(10)
         .accessibilityIdentifier("home_top_bar")
-#if DEBUG
-        .accessibilityValue("collapse_progress_\(Int(selectedCollapseProgress * 100))")
-#endif
     }
 
     @ViewBuilder
@@ -260,14 +239,6 @@ struct HomeChannelsNativeView: View {
 
     private var selectedChannel: HomeChannel {
         HomeChannel(rawValue: selectedChannelID) ?? .recommendation
-    }
-
-    private var selectedCollapseProgress: CGFloat {
-        collapseProgressByChannel[selectedChannel, default: 0]
-    }
-
-    private var compactHeaderProgress: CGFloat {
-        min(max(selectedCollapseProgress, 0), 1)
     }
 
     private func collapseProgressBinding(for channel: HomeChannel) -> Binding<CGFloat> {

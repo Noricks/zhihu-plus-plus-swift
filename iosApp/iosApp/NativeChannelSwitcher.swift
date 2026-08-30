@@ -8,10 +8,8 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
     let isEnabled: Bool
 
     private let title: (Channel) -> String
-    private let systemImage: (Channel) -> String
     private let status: (Channel) -> String?
     private let content: (Channel) -> ChannelContent
-    private let collapseProgress: CGFloat
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
@@ -24,18 +22,14 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
         selection: Binding<Channel.ID>,
         isEnabled: Bool = true,
         title: @escaping (Channel) -> String,
-        systemImage: @escaping (Channel) -> String,
         status: @escaping (Channel) -> String? = { _ in nil },
-        collapseProgress: CGFloat = 0,
         @ViewBuilder content: @escaping (Channel) -> ChannelContent
     ) {
         self.channels = channels
         _selection = selection
         self.isEnabled = isEnabled
         self.title = title
-        self.systemImage = systemImage
         self.status = status
-        self.collapseProgress = collapseProgress
         self.content = content
     }
 
@@ -54,7 +48,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
                         )
                     }
 
-                expandedHeader
+                fixedHeader
                     .zIndex(2)
             }
             .coordinateSpace(name: swipeCoordinateSpace)
@@ -72,70 +66,23 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
         .onDisappear { dragTranslation = 0 }
     }
 
-    private var expandedHeader: some View {
-        VStack(spacing: 0) {
-            expandedTitle
-
-            NativeChannelSelector(
-                channels: channels,
-                selection: $selection,
-                title: title,
-                systemImage: systemImage,
-                collapseProgress: normalizedCollapseProgress,
-                expandedHeight: NativeHomeHeaderLayoutPolicy.channelSelectorHeight
-            )
-        }
+    private var fixedHeader: some View {
+        NativeChannelSelector(
+            channels: channels,
+            selection: $selection,
+            title: title,
+            status: status
+        )
         .background(Color(uiColor: .systemBackground))
         .frame(
             height: NativeHomeHeaderLayoutPolicy.expandedHeaderHeight,
             alignment: .top
         )
         .clipped()
-        .allowsHitTesting(isEnabled && normalizedCollapseProgress < 1)
+        .overlay(alignment: .bottom) { Divider() }
+        .allowsHitTesting(isEnabled)
         .environment(\.nativeChannelIsActive, isEnabled)
-        .accessibilityHidden(normalizedCollapseProgress >= 1)
-    }
-
-    @ViewBuilder
-    private var expandedTitle: some View {
-        if let selectedChannel = channels.first(where: { $0.id == selection }) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("首页")
-                    .font(.title.bold())
-                    .foregroundStyle(.primary)
-
-                if let status = status(selectedChannel) {
-                    Text(status)
-                        .font(.callout.weight(.medium))
-                        .foregroundStyle(Color.secondary.opacity(0.9))
-                        .accessibilityIdentifier("home_channel_refresh_status")
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, NativeHomeHeaderLayoutPolicy.horizontalContentInset)
-            .frame(
-                height: NativeHomeHeaderLayoutPolicy.expandedTitleHeight
-                    * (1 - normalizedCollapseProgress),
-                alignment: .bottom
-            )
-            .opacity(
-                NativeRootHeaderVisibility.expandedOpacity(
-                    collapseProgress: normalizedCollapseProgress
-                )
-            )
-            .clipped()
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(.isHeader)
-            .accessibilityHidden(
-                NativeRootHeaderVisibility.usesCompactSemantics(
-                    collapseProgress: normalizedCollapseProgress
-                )
-            )
-        }
-    }
-
-    private var normalizedCollapseProgress: CGFloat {
-        min(max(collapseProgress, 0), 1)
+        .accessibilityHidden(!isEnabled)
     }
 
     private func channelContent(containerWidth: CGFloat) -> some View {
@@ -484,9 +431,7 @@ private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
     let channels: [Channel]
     @Binding var selection: Channel.ID
     let title: (Channel) -> String
-    let systemImage: (Channel) -> String
-    let collapseProgress: CGFloat
-    let expandedHeight: CGFloat
+    let status: (Channel) -> String?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
@@ -495,7 +440,6 @@ private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 channelButtons
-                    .padding(.vertical, 8)
             }
             .nativeChannelSwipeExclusion()
             .onAppear {
@@ -505,11 +449,8 @@ private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
                 scrollToSelection(using: proxy, animated: !reduceMotion)
             }
         }
-        .frame(height: expandedHeight * (1 - collapseProgress))
-        .opacity(1 - collapseProgress)
-        .offset(y: -6 * collapseProgress)
+        .frame(height: NativeHomeHeaderLayoutPolicy.channelSelectorHeight)
         .clipped()
-        .accessibilityHidden(collapseProgress >= 0.6)
         .accessibilityIdentifier("home_channel_selector")
     }
 
@@ -532,17 +473,23 @@ private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
                     }
                     hapticFeedback(.selection)
                 } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: systemImage(channel))
-                            .imageScale(.medium)
+                    VStack(spacing: 4) {
+                        Text(title(channel))
+                            .font(.system(
+                                size: 17,
+                                weight: isSelected ? .semibold : .regular
+                            ))
+                            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                            .fixedSize()
 
-                        if isSelected {
-                            Text(title(channel))
-                                .font(.subheadline.weight(.semibold))
-                        }
+                        Capsule()
+                            .fill(isSelected ? Color.accentColor : Color.clear)
+                            .frame(width: 24, height: 3)
                     }
+                    .frame(minWidth: 58, minHeight: 44)
+                    .contentShape(Rectangle())
                 }
-                .buttonStyle(NativeChannelPillButtonStyle(isSelected: isSelected))
+                .buttonStyle(.plain)
                 .padding(
                     .leading,
                     index == channels.startIndex
@@ -557,11 +504,20 @@ private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
                 )
                 .id(channel.id)
                 .accessibilityLabel(title(channel))
-                .accessibilityValue(isSelected ? "已选择" : "")
+                .accessibilityValue(accessibilityValue(for: channel, isSelected: isSelected))
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
                 .accessibilityIdentifier("home_channel_\(String(describing: channel.id))")
             }
         }
+    }
+
+    private func accessibilityValue(for channel: Channel, isSelected: Bool) -> String {
+        guard isSelected else { return "" }
+        var values = ["已选择"]
+        if let currentStatus = status(channel) {
+            values.append(currentStatus)
+        }
+        return values.joined(separator: "，")
     }
 
     private func scrollToSelection(using proxy: ScrollViewProxy, animated: Bool) {
@@ -578,25 +534,6 @@ private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
                 proxy.scrollTo(selection, anchor: anchor)
             }
         }
-    }
-}
-
-private struct NativeChannelPillButtonStyle: ButtonStyle {
-    let isSelected: Bool
-
-    @ViewBuilder
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(isSelected ? Color(uiColor: .systemBackground) : Color.primary)
-            .padding(.horizontal, isSelected ? 16 : 0)
-            .frame(minWidth: isSelected ? 124 : 78, minHeight: 44)
-            .background(
-                isSelected ? Color.primary.opacity(0.9) : Color.secondary.opacity(0.1),
-                in: Capsule()
-            )
-            .contentShape(Capsule())
-            .scaleEffect(configuration.isPressed ? 0.96 : 1)
-            .opacity(configuration.isPressed ? 0.82 : 1)
     }
 }
 

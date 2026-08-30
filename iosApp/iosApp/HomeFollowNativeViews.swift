@@ -58,16 +58,16 @@ struct NativeScrollToTopRequestPolicy {
 
 struct NativeHomeHeaderLayoutPolicy {
     static let horizontalContentInset: CGFloat = 20
-    static let expandedTitleHeight: CGFloat = 76
-    static let channelSelectorHeight: CGFloat = 60
-    static let expandedHeaderHeight = expandedTitleHeight + channelSelectorHeight
+    static let actionBarHeight: CGFloat = 48
+    static let channelSelectorHeight: CGFloat = 48
+    static let expandedHeaderHeight = channelSelectorHeight
 
     static func normalized(_ collapseProgress: CGFloat) -> CGFloat {
         min(max(collapseProgress, 0), 1)
     }
 
-    static func visibleHeaderHeight(collapseProgress: CGFloat) -> CGFloat {
-        expandedHeaderHeight * (1 - normalized(collapseProgress))
+    static func visibleHeaderHeight(collapseProgress _: CGFloat) -> CGFloat {
+        expandedHeaderHeight
     }
 
     static func listViewportOrigin(collapseProgress _: CGFloat) -> CGFloat {
@@ -339,7 +339,7 @@ struct HomeNativeView: View {
                 }
 
                 ForEach(visibleItems) { item in
-                    FeedItemRow(item: item, showsThumbnail: true) { route in
+                    FeedItemRow(item: item, showsThumbnail: true, titleDisplayMode: .full) { route in
                         store.opened(item)
                         onOpen(route)
                     }
@@ -481,7 +481,12 @@ struct FollowNativeView: View {
                 }
 
                 ForEach(visibleItems) { item in
-                    FeedItemRow(item: item, showsThumbnail: true, onOpen: onOpen)
+                    FeedItemRow(
+                        item: item,
+                        showsThumbnail: true,
+                        titleDisplayMode: .full,
+                        onOpen: onOpen
+                    )
                         .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
                 }
 

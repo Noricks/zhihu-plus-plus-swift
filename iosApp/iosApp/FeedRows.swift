@@ -1,14 +1,39 @@
 import SwiftUI
 
+enum FeedItemTitleDisplayMode: Equatable {
+    case compact
+    case full
+
+    var lineLimit: Int? {
+        switch self {
+        case .compact: return 2
+        case .full: return nil
+        }
+    }
+}
+
 struct FeedItemRow: View {
     let item: FeedItemDTO
     let showsThumbnail: Bool
+    let titleDisplayMode: FeedItemTitleDisplayMode
     let onOpen: (FeedItemRoute) -> Void
     @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
     @Environment(\.nativeContentPresentation) private var presentation
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
     @ScaledMetric(relativeTo: .subheadline) private var summaryPointSize: CGFloat = 15
     @ScaledMetric(relativeTo: .body) private var wideThumbnailHeight: CGFloat = 96
+
+    init(
+        item: FeedItemDTO,
+        showsThumbnail: Bool,
+        titleDisplayMode: FeedItemTitleDisplayMode = .compact,
+        onOpen: @escaping (FeedItemRoute) -> Void
+    ) {
+        self.item = item
+        self.showsThumbnail = showsThumbnail
+        self.titleDisplayMode = titleDisplayMode
+        self.onOpen = onOpen
+    }
 
     var body: some View {
         rowButton
@@ -29,7 +54,8 @@ struct FeedItemRow: View {
                         Text(item.title)
                             .font(.headline)
                             .foregroundStyle(.primary)
-                            .lineLimit(2)
+                            .lineLimit(titleDisplayMode.lineLimit)
+                            .fixedSize(horizontal: false, vertical: true)
 
                         if let summary = item.summary, !summary.isEmpty {
                             let renderedPointSize = summaryPointSize * presentation.fontScale
