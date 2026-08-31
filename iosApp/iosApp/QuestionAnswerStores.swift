@@ -146,6 +146,8 @@ final class AnswerStore: ObservableObject, Identifiable {
 
     private let repository: QuestionAnswerRepository
     private var revision: UInt64 = 0
+    private var activeLoadTask: Task<AnswerDTO, Error>?
+    private var didReportReadHistory = false
 
     init(route: AnswerRouteDTO, repository: QuestionAnswerRepository) {
         initialRoute = route
@@ -154,31 +156,68 @@ final class AnswerStore: ObservableObject, Identifiable {
     }
 
     func loadIfNeeded() async {
-        guard loadState == .idle else { return }
-        await retry()
+        await load(force: false, reportsReadHistory: true)
+    }
+
+    func preloadIfNeeded() async {
+        await load(force: false, reportsReadHistory: false)
     }
 
     func retry() async {
+        await load(force: true, reportsReadHistory: true)
+    }
+
+    private func load(force: Bool, reportsReadHistory: Bool) async {
+        if let activeLoadTask {
+            do {
+                let loaded = try await activeLoadTask.value
+                if reportsReadHistory { reportReadHistoryIfNeeded(for: loaded) }
+            } catch {
+                // The request owner publishes the shared failure state.
+            }
+            return
+        }
+        guard force || loadState == .idle else {
+            if reportsReadHistory, let content {
+                reportReadHistoryIfNeeded(for: content)
+            }
+            return
+        }
+
         revision &+= 1
         let accepted = revision
         loadState = .loading
+        let repository = repository
+        let route = initialRoute
+        let task = Task { try await repository.fetchAnswer(route) }
+        activeLoadTask = task
+        defer {
+            if revision == accepted { activeLoadTask = nil }
+        }
         do {
-            let loaded = try await repository.fetchAnswer(initialRoute)
+            let loaded = try await task.value
             guard revision == accepted else { return }
             content = loaded
             loadState = .loaded
-            Task {
-                await repository.recordReadHistory(
-                    contentToken: String(loaded.route.contentID),
-                    contentType: loaded.route.kind.rawValue
-                )
-            }
+            if reportsReadHistory { reportReadHistoryIfNeeded(for: loaded) }
         } catch is CancellationError {
             if revision == accepted { loadState = content == nil ? .idle : .loaded }
             return
         } catch {
             guard revision == accepted else { return }
             loadState = .failed(error.localizedDescription)
+        }
+    }
+
+    private func reportReadHistoryIfNeeded(for content: AnswerDTO) {
+        guard !didReportReadHistory else { return }
+        didReportReadHistory = true
+        let repository = repository
+        Task {
+            await repository.recordReadHistory(
+                contentToken: String(content.route.contentID),
+                contentType: content.route.kind.rawValue
+            )
         }
     }
 
@@ -369,6 +408,7 @@ final class AnswerPagerStore: ObservableObject {
             await openedHistory.markOpened(answerID: current.id, questionID: questionID)
         }
         await prepareNextIfNeeded()
+        await preloadAdjacentAnswers()
     }
 
     func didDisplay(answerID: Int64) async {
@@ -399,12 +439,14 @@ final class AnswerPagerStore: ObservableObject {
             await openedHistory.markOpened(answerID: current.id, questionID: questionID)
         }
         await prepareNextIfNeeded()
+        await preloadAdjacentAnswers()
     }
 
     func retrySwitch() async {
         boundaryNotice = nil
         switchError = nil
         await prepareNextIfNeeded(force: true)
+        await preloadAdjacentAnswers()
     }
 
     @discardableResult
@@ -426,6 +468,19 @@ final class AnswerPagerStore: ObservableObject {
         let created = AnswerStore(route: route, repository: repository)
         stores[route.contentID] = created
         return created
+    }
+
+    private func preloadAdjacentAnswers() async {
+        let previousStore = previous
+        let nextStore = next
+        async let previousLoad: Void = preload(previousStore)
+        async let nextLoad: Void = preload(nextStore)
+        _ = await (previousLoad, nextLoad)
+    }
+
+    private func preload(_ store: AnswerStore?) async {
+        guard let store else { return }
+        await store.preloadIfNeeded()
     }
 
     private func prepareNextIfNeeded(force: Bool = false) async {

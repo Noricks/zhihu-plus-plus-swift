@@ -1121,6 +1121,42 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         XCTAssertEqual(pager.next?.id, 42)
     }
 
+    @MainActor
+    func testPagerPreloadsAdjacentBodiesWithoutReportingThemAsRead() async {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerResultsByID = Dictionary(uniqueKeysWithValues: [40, 41, 42].map {
+            (Int64($0), .success(QAFixtures.answerDTO(id: Int64($0))))
+        })
+        let pager = AnswerPagerStore(
+            route: AnswerRouteDTO(
+                contentID: 41,
+                kind: .answer,
+                questionID: 7,
+                source: AnswerPageSourceDTO(
+                    questionID: 7,
+                    order: .default,
+                    orderedAnswers: [40, 41, 42].map(QAFixtures.preview),
+                    selectedAnswerID: 41,
+                    nextURL: nil
+                )
+            ),
+            repository: repository,
+            openedHistory: StubOpenedHistory()
+        )
+
+        await pager.prepare()
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(Set(repository.fetchedAnswerIDs()), [40, 41, 42])
+        XCTAssertEqual(repository.readHistoryTokens(), ["41"])
+
+        await pager.didDisplay(answerID: 42)
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(Set(repository.fetchedAnswerIDs()), [40, 41, 42])
+        XCTAssertEqual(repository.readHistoryTokens(), ["41", "42"])
+    }
+
     private func makeRepository(
         accountStore: AccountJSONStore = QAAccountStore()
     ) -> URLSessionQuestionAnswerRepository {
@@ -1219,6 +1255,28 @@ private enum QAFixtures {
         invitationPreface: nil,
         endorsements: []
     )
+
+    static func answerDTO(id: Int64) -> AnswerDTO {
+        AnswerDTO(
+            route: AnswerRouteDTO(contentID: id, kind: .answer, questionID: 7),
+            title: "原生问题",
+            questionID: 7,
+            author: author,
+            blocks: [.paragraph(UUID(), [QAInlineRun(text: "正文")])],
+            attachment: nil,
+            sourceURL: URL(string: "https://www.zhihu.com/question/7/answer/\(id)")!,
+            voteUpCount: 1,
+            favoriteCount: 0,
+            commentCount: 0,
+            voteState: .neutral,
+            favoriteState: .unknown,
+            createdTimeSeconds: 1,
+            updatedTimeSeconds: 1,
+            ipLocation: nil,
+            invitationPreface: nil,
+            endorsements: []
+        )
+    }
 }
 
 private final class QARequestRecorder: @unchecked Sendable {
@@ -1287,9 +1345,13 @@ private final class QAAccountStore: AccountJSONStore, @unchecked Sendable {
 private enum QAStubError: LocalizedError { case failed; var errorDescription: String? { "测试失败" } }
 
 private final class StubQuestionAnswerRepository: QuestionAnswerRepository, @unchecked Sendable {
+    private let eventLock = NSLock()
+    private var fetchedAnswerIDStorage: [Int64] = []
+    private var readHistoryTokenStorage: [String] = []
     var questionResult: Result<QuestionDTO, Error> = .failure(QAStubError.failed)
     var answerPageResults: [Result<QuestionAnswerPageDTO, Error>] = []
     var answerResult: Result<AnswerDTO, Error> = .failure(QAStubError.failed)
+    var answerResultsByID: [Int64: Result<AnswerDTO, Error>] = [:]
 
     func fetchQuestion(_ route: QuestionRouteDTO) async throws -> QuestionDTO { try questionResult.get() }
     func fetchQuestionAnswers(questionID: Int64, sort: QuestionAnswerSort, after nextURL: URL?) async throws -> QuestionAnswerPageDTO {
@@ -1297,7 +1359,10 @@ private final class StubQuestionAnswerRepository: QuestionAnswerRepository, @unc
         return try answerPageResults.removeFirst().get()
     }
     func setQuestionFollowing(_ following: Bool, questionID: Int64) async throws {}
-    func fetchAnswer(_ route: AnswerRouteDTO) async throws -> AnswerDTO { try answerResult.get() }
+    func fetchAnswer(_ route: AnswerRouteDTO) async throws -> AnswerDTO {
+        eventLock.withLock { fetchedAnswerIDStorage.append(route.contentID) }
+        return try (answerResultsByID[route.contentID] ?? answerResult).get()
+    }
     func setVote(_ state: QAVoteState, route: AnswerRouteDTO) async throws -> QAVoteMutationResult {
         QAVoteMutationResult(state: state, voteUpCount: 1)
     }
@@ -1305,6 +1370,17 @@ private final class StubQuestionAnswerRepository: QuestionAnswerRepository, @unc
         QACollectionsResult(items: [], favoriteState: .notFavorited)
     }
     func setCollection(_ selected: Bool, collectionID: String, route: AnswerRouteDTO) async throws {}
+    func recordReadHistory(contentToken: String, contentType: String) async {
+        eventLock.withLock { readHistoryTokenStorage.append(contentToken) }
+    }
+
+    func fetchedAnswerIDs() -> [Int64] {
+        eventLock.withLock { fetchedAnswerIDStorage }
+    }
+
+    func readHistoryTokens() -> [String] {
+        eventLock.withLock { readHistoryTokenStorage }
+    }
 }
 
 private actor StubOpenedHistory: AnswerOpenedHistory {

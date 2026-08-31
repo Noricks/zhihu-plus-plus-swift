@@ -26,7 +26,10 @@ struct AnswerNativeView: View {
         }
         .navigationTitle(store.initialRoute.kind == .answer ? "回答" : "文章")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await store.loadIfNeeded() }
+        // Page visibility is owned by AnswerPagerStore. Hosting an adjacent page may
+        // start its view task before the user actually swipes to it, so preload the
+        // body here without reporting a false read-history event.
+        .task { await store.preloadIfNeeded() }
         .sheet(isPresented: $showsCollections) {
             QACollectionsSheet(store: store)
         }
