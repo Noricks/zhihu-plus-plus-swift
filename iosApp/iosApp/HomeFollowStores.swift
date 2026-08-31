@@ -321,11 +321,12 @@ final class FileHomeRecommendationCachePersistence:
 
     func load(for context: HomeRecommendationCacheContext) -> HomeRecommendationCacheSnapshot? {
         let startedAt = ProcessInfo.processInfo.systemUptime
-        if let cached = lock.withLock({ memory[context] }),
-           FileHomeRecommendationCachePolicy.isFresh(savedAt: cached.savedAt, now: now())
-        {
-            recordLoad(startedAt: startedAt, snapshot: cached, source: "memory")
-            return cached
+        if let cached = lock.withLock({ memory[context] }) {
+            if FileHomeRecommendationCachePolicy.isFresh(savedAt: cached.savedAt, now: now()) {
+                recordLoad(startedAt: startedAt, snapshot: cached, source: "memory")
+                return cached
+            }
+            lock.withLock { memory.removeValue(forKey: context) }
         }
 
         guard let data = try? Data(contentsOf: fileURL(for: context)),
@@ -532,6 +533,7 @@ final class HomeFeedNativeStore: ObservableObject {
         guard loadedSource != source || isLoading else { return }
         resetForCacheContextChange()
         if await restoreCachedSnapshotForCurrentContext(), !needsRefreshAfterIdle() {
+            scheduleFirstContinuationPrefetch()
             return
         }
         _ = await refresh(intent: .sourceChanged)
