@@ -263,7 +263,6 @@ final class HomeFeedNativeStore: ObservableObject {
     private var activeRefreshTask: Task<HomeRecommendationRefreshOutcome, Never>?
     private var activeRefreshGeneration: UInt64?
 
-    private static let maximumRefreshRequests = 6
     private static let maximumConsecutivePagesWithoutNewItems = 2
     private static let refreshTimeout: TimeInterval = 15
     private static let paginationPrefetchDistance = 5
@@ -533,7 +532,9 @@ final class HomeFeedNativeStore: ObservableObject {
         var publishedFirstBatch = false
 
         do {
-            for _ in 0..<Self.maximumRefreshRequests {
+            for _ in 0..<HomeRecommendationRefreshExecutionPolicy.maximumRequests(
+                for: intent
+            ) {
                 try Task.checkCancellation()
                 guard refreshGeneration == generation else { return .cancelled }
                 if let requestedPageURL,
@@ -713,6 +714,14 @@ final class HomeFeedNativeStore: ObservableObject {
         case timedOut
 
         var errorDescription: String? { "刷新超时，请稍后重试" }
+    }
+}
+
+struct HomeRecommendationRefreshExecutionPolicy {
+    static let maximumExtendedRequests = 6
+
+    static func maximumRequests(for intent: HomeRecommendationRefreshIntent) -> Int {
+        intent == .pull ? 1 : maximumExtendedRequests
     }
 }
 

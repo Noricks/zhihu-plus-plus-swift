@@ -147,6 +147,56 @@ struct NativeHomeRefreshIndicatorPresentation {
     }
 }
 
+private struct NativeHomeRefreshIndicator: View {
+    let pullDistance: CGFloat
+    let isRefreshing: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var refreshRotation: Double = 0
+
+    var body: some View {
+        let progress = NativeHomeRefreshIndicatorPresentation.progress(
+            pullDistance: pullDistance,
+            isRefreshing: isRefreshing
+        )
+        Image(systemName: "arrow.clockwise")
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: 24, height: 24)
+            .rotationEffect(.degrees(
+                isRefreshing ? refreshRotation : Double(progress) * 210
+            ))
+            .opacity(NativeHomeRefreshIndicatorPresentation.opacity(
+                pullDistance: pullDistance,
+                isRefreshing: isRefreshing
+            ))
+            .scaleEffect(NativeHomeRefreshIndicatorPresentation.scale(
+                pullDistance: pullDistance,
+                isRefreshing: isRefreshing
+            ))
+            .onAppear(perform: updateRotation)
+            .onChange(of: isRefreshing) { _ in updateRotation() }
+            .onChange(of: reduceMotion) { _ in updateRotation() }
+            .accessibilityHidden(!NativeHomeRefreshIndicatorPresentation.isVisible(
+                pullDistance: pullDistance,
+                isRefreshing: isRefreshing
+            ))
+            .accessibilityLabel("正在更新")
+            .accessibilityIdentifier("home_refresh_indicator")
+    }
+
+    private func updateRotation() {
+        guard isRefreshing, !reduceMotion else {
+            refreshRotation = 0
+            return
+        }
+        refreshRotation = 0
+        withAnimation(.linear(duration: 0.7).repeatForever(autoreverses: false)) {
+            refreshRotation = 360
+        }
+    }
+}
+
 extension View {
     func nativeHomeFeedListLayout() -> some View {
         modifier(NativeHomeFeedListLayout())
@@ -211,24 +261,11 @@ struct NativeRootLargeTitle: View {
                         // The native refresh control lives above this transparent spacer
                         // and is covered by the fixed opaque header. This duplicate visual
                         // follows the pull continuously so it does not pop in abruptly.
-                        ProgressView()
-                            .controlSize(.regular)
+                        NativeHomeRefreshIndicator(
+                            pullDistance: pullDistance,
+                            isRefreshing: isRefreshing
+                        )
                             .padding(.top, 14)
-                            .opacity(NativeHomeRefreshIndicatorPresentation.opacity(
-                                pullDistance: pullDistance,
-                                isRefreshing: isRefreshing
-                            ))
-                            .scaleEffect(NativeHomeRefreshIndicatorPresentation.scale(
-                                pullDistance: pullDistance,
-                                isRefreshing: isRefreshing
-                            ))
-                            .animation(.easeOut(duration: 0.16), value: isRefreshing)
-                            .accessibilityHidden(!NativeHomeRefreshIndicatorPresentation.isVisible(
-                                pullDistance: pullDistance,
-                                isRefreshing: isRefreshing
-                            ))
-                            .accessibilityLabel("正在更新")
-                            .accessibilityIdentifier("home_refresh_indicator")
                     }
             }
         }
