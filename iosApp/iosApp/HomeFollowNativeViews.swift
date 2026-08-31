@@ -238,7 +238,7 @@ private struct NativeShortPullRefreshModifier: ViewModifier {
                 isEnabled: isEnabled,
                 action: action
             )
-                .frame(width: 0, height: 0)
+                .frame(width: 1, height: 1)
         }
     }
 }
@@ -637,6 +637,12 @@ struct HomeNativeView: View {
                     collapseProgress: $collapseProgress
                 )
                     .id(NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .recommendation))
+                    // Keep the UIKit probe inside a List cell. A modifier on the
+                    // List background can be a sibling of the backing scroll view
+                    // on newer SwiftUI releases, leaving no UIScrollView ancestor.
+                    .nativeShortPullRefresh(isEnabled: isActiveChannel) {
+                        await performPullRefresh()
+                    }
 
                 if store.items.isEmpty, store.isLoading {
                     HStack { Spacer(); ProgressView("正在加载推荐"); Spacer() }
@@ -686,13 +692,9 @@ struct HomeNativeView: View {
             )
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-            .nativeShortPullRefresh(isEnabled: isActiveChannel) {
-                guard isActiveChannel else { return }
-                let outcome = await store.refresh(intent: .pull)
-                if outcome == .ignored {
-                    hapticFeedback(.refreshIgnored)
-                }
-            }
+            // This remains as a durable fallback if a future SwiftUI release
+            // changes List's UIKit hierarchy before the short-pull probe installs.
+            .refreshable { await performPullRefresh() }
             .onAppear {
                 // A request token records an action that already happened. Returning
                 // from a pushed answer must not replay it and destroy List's retained
@@ -726,6 +728,14 @@ struct HomeNativeView: View {
             from: store.items,
             blockedMemberIDs: questionAuthorBlocklist.blockedMemberIDs
         )
+    }
+
+    private func performPullRefresh() async {
+        guard isActiveChannel else { return }
+        let outcome = await store.refresh(intent: .pull)
+        if outcome == .ignored {
+            hapticFeedback(.refreshIgnored)
+        }
     }
 
     private func scrollToTop(_ proxy: ScrollViewProxy, animated: Bool) {
