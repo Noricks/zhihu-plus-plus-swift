@@ -133,6 +133,9 @@ struct AnswerNativeView: View {
             AnswerActionBar(
                 content: content,
                 voteInFlight: store.isVoteMutationInFlight,
+                onAuthor: {
+                    if let intent = content.author.personIntent { onNavigate(intent) }
+                },
                 onVoteUp: {
                     let target: QAVoteState = content.voteState == .up ? .neutral : .up
                     Task { await store.setVote(target) }
@@ -278,66 +281,145 @@ private struct QADateMetadata: View {
 private struct AnswerActionBar: View {
     let content: AnswerDTO
     let voteInFlight: Bool
+    let onAuthor: () -> Void
     let onVoteUp: () -> Void
     let onVoteDown: () -> Void
     let onFavorite: () -> Void
     let onComments: () -> Void
 
     var body: some View {
-        Group {
-            if #available(iOS 26, *) {
-                GlassEffectContainer(spacing: 8) {
-                    actions
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .glassEffect(.regular.interactive(), in: .capsule)
-                }
-            } else {
-                actions
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(.ultraThinMaterial, in: Capsule())
-            }
+        VStack(spacing: 0) {
+            Divider()
+            actions
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 6)
+        .background(.bar)
     }
 
     private var actions: some View {
-        HStack(spacing: 4) {
-            action("hand.thumbsup", count: content.voteUpCount, selected: content.voteState == .up, action: onVoteUp)
+        HStack(spacing: 6) {
+            authorAction
+            Spacer(minLength: 0)
+            action(
+                "arrowtriangle.up",
+                label: "赞同",
+                count: content.voteUpCount,
+                selected: content.voteState == .up,
+                action: onVoteUp
+            )
                 .disabled(voteInFlight)
-            action("hand.thumbsdown", label: "反对", selected: content.voteState == .down, action: onVoteDown)
+            action(
+                "arrowtriangle.down",
+                label: "反对",
+                selected: content.voteState == .down,
+                action: onVoteDown
+            )
                 .disabled(voteInFlight || content.route.kind == .article)
             action(
                 content.favoriteState == .favorited ? "star.fill" : "star",
+                label: "收藏",
                 count: content.favoriteCount,
                 selected: content.favoriteState == .favorited,
                 action: onFavorite
             )
-            action("bubble.left", count: content.commentCount, selected: false, action: onComments)
+            action(
+                "bubble.left",
+                label: "评论",
+                count: content.commentCount,
+                selected: false,
+                action: onComments
+            )
         }
+    }
+
+    private var authorAction: some View {
+        Button(action: onAuthor) {
+            HStack(spacing: 7) {
+                AsyncImage(url: content.author.avatarURL) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    Image(systemName: "person.crop.circle.fill")
+                        .resizable()
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(width: 30, height: 30)
+                .clipShape(Circle())
+
+                Text(content.author.displayName)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .padding(.leading, 3)
+            .padding(.trailing, 10)
+            .frame(minHeight: 44)
+            .background(Color(uiColor: .secondarySystemFill), in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(content.author.personIntent == nil)
+        .frame(maxWidth: 118, alignment: .leading)
+        .accessibilityLabel(content.author.displayName)
+        .accessibilityHint(content.author.personIntent == nil ? "" : "打开作者主页")
     }
 
     private func action(
         _ systemName: String,
+        label: String,
         count: Int? = nil,
-        label: String? = nil,
         selected: Bool,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            VStack(spacing: 2) {
-                Image(systemName: systemName).font(.system(size: 20, weight: selected ? .semibold : .regular))
-                Text(label ?? count.map(String.init) ?? "")
-                    .font(.caption2.monospacedDigit())
-                    .lineLimit(1)
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: systemName)
+                    .font(.system(size: 22, weight: selected ? .semibold : .regular))
+                    .frame(width: 32, height: 32)
+                if let count {
+                    Text(QAEngagementCountFormatter.string(for: count))
+                        .font(.caption2.monospacedDigit())
+                        .lineLimit(1)
+                        .offset(x: 8, y: -5)
+                }
             }
-            .frame(maxWidth: .infinity, minHeight: 44)
+            .frame(width: 44, height: 44)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(selected ? Color.accentColor : Color(uiColor: .label))
+        .foregroundStyle(selected ? Color.accentColor : Color(uiColor: .secondaryLabel))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(accessibilityValue(count: count, selected: selected))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private func accessibilityValue(count: Int?, selected: Bool) -> String {
+        [
+            count.map { "\($0)" },
+            selected ? "已选择" : nil
+        ]
+        .compactMap { $0 }
+        .joined(separator: "，")
+    }
+}
+
+enum QAEngagementCountFormatter {
+    static func string(for count: Int) -> String {
+        let value = max(0, count)
+        if value >= 100_000_000 { return abbreviated(value, divisor: 100_000_000, suffix: "亿") }
+        if value >= 10_000 { return abbreviated(value, divisor: 10_000, suffix: "万") }
+        return String(value)
+    }
+
+    private static func abbreviated(_ value: Int, divisor: Int, suffix: String) -> String {
+        var whole = value / divisor
+        var tenths = ((value % divisor) * 10 + divisor / 2) / divisor
+        if tenths == 10 {
+            whole += 1
+            tenths = 0
+        }
+        return tenths == 0 ? "\(whole) \(suffix)" : "\(whole).\(tenths) \(suffix)"
     }
 }
 

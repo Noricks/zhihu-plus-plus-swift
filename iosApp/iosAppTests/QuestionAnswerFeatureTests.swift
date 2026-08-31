@@ -20,6 +20,14 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         XCTAssertEqual(QAReadingPreferences(defaults: defaults), baseline)
     }
 
+    func testEngagementCountsStayCompactWithoutHidingSmallCounts() {
+        XCTAssertEqual(QAEngagementCountFormatter.string(for: -1), "0")
+        XCTAssertEqual(QAEngagementCountFormatter.string(for: 7_842), "7842")
+        XCTAssertEqual(QAEngagementCountFormatter.string(for: 10_000), "1 万")
+        XCTAssertEqual(QAEngagementCountFormatter.string(for: 23_499), "2.3 万")
+        XCTAssertEqual(QAEngagementCountFormatter.string(for: 100_000_000), "1 亿")
+    }
+
     func testAnswerPagerGestureArbitrationPrioritizesSystemBackAtLeadingEdge() {
         let right = CGPoint(x: 120, y: 10)
         let left = CGPoint(x: -120, y: 10)
