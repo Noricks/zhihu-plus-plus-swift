@@ -532,6 +532,30 @@ final class NativeShellPreferencesTests: XCTestCase {
         ), 1)
     }
 
+    func testShortPullRefreshUsesCompactThresholdAndRejectsDuplicateTriggers() {
+        XCTAssertLessThan(NativeShortPullRefreshPolicy.triggerDistance, 40)
+        XCTAssertFalse(NativeShortPullRefreshPolicy.shouldTrigger(
+            maximumPullDistance: NativeShortPullRefreshPolicy.triggerDistance - 0.1,
+            isEnabled: true,
+            isRefreshing: false
+        ))
+        XCTAssertTrue(NativeShortPullRefreshPolicy.shouldTrigger(
+            maximumPullDistance: NativeShortPullRefreshPolicy.triggerDistance,
+            isEnabled: true,
+            isRefreshing: false
+        ))
+        XCTAssertFalse(NativeShortPullRefreshPolicy.shouldTrigger(
+            maximumPullDistance: NativeShortPullRefreshPolicy.triggerDistance + 20,
+            isEnabled: false,
+            isRefreshing: false
+        ))
+        XCTAssertFalse(NativeShortPullRefreshPolicy.shouldTrigger(
+            maximumPullDistance: NativeShortPullRefreshPolicy.triggerDistance + 20,
+            isEnabled: true,
+            isRefreshing: true
+        ))
+    }
+
     func testHomeTabDoubleTapRequiresTwoReselectEventsAndTriggersOncePerPair() {
         var gate = NativeHomeTabDoubleTapGate(maximumInterval: 0.5)
 

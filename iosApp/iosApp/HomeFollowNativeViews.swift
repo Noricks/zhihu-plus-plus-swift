@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct NativeChannelTaskIdentity: Hashable {
     let isActive: Bool
@@ -147,25 +148,45 @@ struct NativeHomeRefreshIndicatorPresentation {
     }
 }
 
+struct NativeShortPullRefreshPolicy {
+    /// Deliberately shorter than UIRefreshControl's system threshold. This is
+    /// enough to make the gesture intentional without requiring a large pull.
+    static let triggerDistance: CGFloat = 32
+    static let settledDistance: CGFloat = 44
+
+    static func shouldTrigger(
+        maximumPullDistance: CGFloat,
+        isEnabled: Bool,
+        isRefreshing: Bool
+    ) -> Bool {
+        isEnabled && !isRefreshing && maximumPullDistance >= triggerDistance
+    }
+}
+
 private struct NativeHomeRefreshIndicator: View {
     let pullDistance: CGFloat
     let isRefreshing: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var refreshRotation: Double = 0
 
     var body: some View {
         let progress = NativeHomeRefreshIndicatorPresentation.progress(
             pullDistance: pullDistance,
             isRefreshing: isRefreshing
         )
-        Image(systemName: "arrow.clockwise")
-            .font(.system(size: 16, weight: .semibold))
+        ZStack {
+            if isRefreshing {
+                NativeHomeLoadingSpinner(reduceMotion: reduceMotion)
+                    .transition(.opacity.combined(with: .scale(scale: 0.78)))
+            } else {
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 15, weight: .semibold))
+                    .rotationEffect(.degrees(Double(progress) * 180))
+                    .transition(.opacity.combined(with: .scale(scale: 0.78)))
+            }
+        }
             .foregroundStyle(.secondary)
             .frame(width: 24, height: 24)
-            .rotationEffect(.degrees(
-                isRefreshing ? refreshRotation : Double(progress) * 210
-            ))
             .opacity(NativeHomeRefreshIndicatorPresentation.opacity(
                 pullDistance: pullDistance,
                 isRefreshing: isRefreshing
@@ -174,9 +195,7 @@ private struct NativeHomeRefreshIndicator: View {
                 pullDistance: pullDistance,
                 isRefreshing: isRefreshing
             ))
-            .onAppear(perform: updateRotation)
-            .onChange(of: isRefreshing) { _ in updateRotation() }
-            .onChange(of: reduceMotion) { _ in updateRotation() }
+            .animation(.easeInOut(duration: 0.18), value: isRefreshing)
             .accessibilityHidden(!NativeHomeRefreshIndicatorPresentation.isVisible(
                 pullDistance: pullDistance,
                 isRefreshing: isRefreshing
@@ -184,15 +203,217 @@ private struct NativeHomeRefreshIndicator: View {
             .accessibilityLabel("正在更新")
             .accessibilityIdentifier("home_refresh_indicator")
     }
+}
 
-    private func updateRotation() {
-        guard isRefreshing, !reduceMotion else {
-            refreshRotation = 0
-            return
+private struct NativeHomeLoadingSpinner: View {
+    let reduceMotion: Bool
+
+    var body: some View {
+        if reduceMotion {
+            spinnerShape
+        } else {
+            TimelineView(.animation(minimumInterval: 1 / 60)) { context in
+                let elapsed = context.date.timeIntervalSinceReferenceDate
+                spinnerShape
+                    .rotationEffect(.degrees(elapsed.truncatingRemainder(dividingBy: 0.72) / 0.72 * 360))
+            }
         }
-        refreshRotation = 0
-        withAnimation(.linear(duration: 0.7).repeatForever(autoreverses: false)) {
-            refreshRotation = 360
+    }
+
+    private var spinnerShape: some View {
+        Circle()
+            .trim(from: 0.12, to: 0.86)
+            .stroke(style: StrokeStyle(lineWidth: 2.1, lineCap: .round))
+            .frame(width: 17, height: 17)
+    }
+}
+
+private struct NativeShortPullRefreshModifier: ViewModifier {
+    let isEnabled: Bool
+    let action: @MainActor () async -> Void
+
+    func body(content: Content) -> some View {
+        content.background {
+            NativeShortPullRefreshInstaller(
+                isEnabled: isEnabled,
+                action: action
+            )
+                .frame(width: 0, height: 0)
+        }
+    }
+}
+
+private struct NativeShortPullRefreshInstaller: UIViewRepresentable {
+    let isEnabled: Bool
+    let action: @MainActor () async -> Void
+
+    func makeUIView(context: Context) -> ProbeView {
+        let view = ProbeView()
+        view.update(isEnabled: isEnabled, action: action)
+        return view
+    }
+
+    func updateUIView(_ uiView: ProbeView, context: Context) {
+        uiView.update(isEnabled: isEnabled, action: action)
+        uiView.scheduleInstallation()
+    }
+
+    static func dismantleUIView(_ uiView: ProbeView, coordinator: Void) {
+        uiView.detach()
+    }
+
+    @MainActor
+    final class ProbeView: UIView {
+        private weak var installedScrollView: UIScrollView?
+        private let refreshControl = UIRefreshControl()
+        private var maximumPullDistance: CGFloat = 0
+        private var refreshTask: Task<Void, Never>?
+        private var isRefreshEnabled = true
+        private var action: (@MainActor () async -> Void)?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+            refreshControl.tintColor = .clear
+            refreshControl.addTarget(
+                self,
+                action: #selector(handleSystemRefresh),
+                for: .valueChanged
+            )
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { nil }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            scheduleInstallation()
+        }
+
+        func update(
+            isEnabled: Bool,
+            action: @escaping @MainActor () async -> Void
+        ) {
+            isRefreshEnabled = isEnabled
+            refreshControl.isEnabled = isEnabled
+            self.action = action
+            if !isEnabled { maximumPullDistance = 0 }
+        }
+
+        func scheduleInstallation() {
+            DispatchQueue.main.async { [weak self] in
+                self?.installIfNeeded()
+            }
+        }
+
+        func detach() {
+            refreshTask?.cancel()
+            refreshTask = nil
+            if let installedScrollView {
+                installedScrollView.panGestureRecognizer.removeTarget(
+                    self,
+                    action: #selector(handlePan(_:))
+                )
+                if installedScrollView.refreshControl === refreshControl {
+                    installedScrollView.refreshControl = nil
+                }
+            }
+            installedScrollView = nil
+        }
+
+        private func installIfNeeded() {
+            guard let scrollView = ancestorScrollView() else { return }
+            guard installedScrollView !== scrollView else { return }
+            detach()
+            installedScrollView = scrollView
+            scrollView.refreshControl = refreshControl
+            scrollView.panGestureRecognizer.addTarget(self, action: #selector(handlePan(_:)))
+        }
+
+        private func ancestorScrollView() -> UIScrollView? {
+            var candidate = superview
+            while let view = candidate {
+                if let scrollView = view as? UIScrollView { return scrollView }
+                candidate = view.superview
+            }
+            return nil
+        }
+
+        @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+            guard let scrollView = installedScrollView,
+                  refreshTask == nil,
+                  !refreshControl.isRefreshing
+            else { return }
+
+            switch gesture.state {
+            case .began:
+                maximumPullDistance = pullDistance(in: scrollView)
+            case .changed:
+                maximumPullDistance = max(
+                    maximumPullDistance,
+                    pullDistance(in: scrollView)
+                )
+            case .ended:
+                let shouldTrigger = NativeShortPullRefreshPolicy.shouldTrigger(
+                    maximumPullDistance: maximumPullDistance,
+                    isEnabled: isRefreshEnabled,
+                    isRefreshing: refreshTask != nil || refreshControl.isRefreshing
+                )
+                maximumPullDistance = 0
+                if shouldTrigger { beginRefresh(in: scrollView) }
+            case .cancelled, .failed:
+                maximumPullDistance = 0
+            default:
+                break
+            }
+        }
+
+        @objc private func handleSystemRefresh() {
+            guard let scrollView = installedScrollView else { return }
+            beginRefresh(in: scrollView)
+        }
+
+        private func beginRefresh(in scrollView: UIScrollView) {
+            guard refreshTask == nil, isRefreshEnabled, let action else {
+                refreshControl.endRefreshing()
+                return
+            }
+
+            let topInset = scrollView.adjustedContentInset.top
+            if !refreshControl.isRefreshing { refreshControl.beginRefreshing() }
+            let targetOffset = CGPoint(
+                x: scrollView.contentOffset.x,
+                y: -(topInset + NativeShortPullRefreshPolicy.settledDistance)
+            )
+            UIView.animate(
+                withDuration: 0.2,
+                delay: 0,
+                options: [.allowUserInteraction, .beginFromCurrentState, .curveEaseOut]
+            ) {
+                scrollView.setContentOffset(targetOffset, animated: false)
+            }
+
+            refreshTask = Task { @MainActor [weak self] in
+                await action()
+                guard let self, !Task.isCancelled else { return }
+                self.finishRefresh()
+            }
+        }
+
+        private func finishRefresh() {
+            refreshTask = nil
+            UIView.animate(
+                withDuration: 0.24,
+                delay: 0,
+                options: [.allowUserInteraction, .beginFromCurrentState, .curveEaseInOut]
+            ) {
+                self.refreshControl.endRefreshing()
+                self.installedScrollView?.layoutIfNeeded()
+            }
+        }
+
+        private func pullDistance(in scrollView: UIScrollView) -> CGFloat {
+            max(-(scrollView.contentOffset.y + scrollView.adjustedContentInset.top), 0)
         }
     }
 }
@@ -209,6 +430,16 @@ extension View {
         modifier(NativeHomeFeedScrollTracking(
             collapseProgress: collapseProgress,
             isActive: isActive
+        ))
+    }
+
+    func nativeShortPullRefresh(
+        isEnabled: Bool,
+        action: @escaping @MainActor () async -> Void
+    ) -> some View {
+        modifier(NativeShortPullRefreshModifier(
+            isEnabled: isEnabled,
+            action: action
         ))
     }
 }
@@ -455,7 +686,7 @@ struct HomeNativeView: View {
             )
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-            .refreshable {
+            .nativeShortPullRefresh(isEnabled: isActiveChannel) {
                 guard isActiveChannel else { return }
                 let outcome = await store.refresh(intent: .pull)
                 if outcome == .ignored {

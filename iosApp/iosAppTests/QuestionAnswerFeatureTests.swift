@@ -1122,9 +1122,9 @@ final class QuestionAnswerFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testPagerPreloadsAdjacentBodiesWithoutReportingThemAsRead() async {
+    func testPagerPreloadsTwoAnswersAheadWithoutReportingThemAsRead() async {
         let repository = StubQuestionAnswerRepository()
-        repository.answerResultsByID = Dictionary(uniqueKeysWithValues: [40, 41, 42].map {
+        repository.answerResultsByID = Dictionary(uniqueKeysWithValues: [40, 41, 42, 43, 44].map {
             (Int64($0), .success(QAFixtures.answerDTO(id: Int64($0))))
         })
         let pager = AnswerPagerStore(
@@ -1135,7 +1135,7 @@ final class QuestionAnswerFeatureTests: XCTestCase {
                 source: AnswerPageSourceDTO(
                     questionID: 7,
                     order: .default,
-                    orderedAnswers: [40, 41, 42].map(QAFixtures.preview),
+                    orderedAnswers: [40, 41, 42, 43, 44].map(QAFixtures.preview),
                     selectedAnswerID: 41,
                     nextURL: nil
                 )
@@ -1147,13 +1147,13 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         await pager.prepare()
         for _ in 0..<10 { await Task.yield() }
 
-        XCTAssertEqual(Set(repository.fetchedAnswerIDs()), [40, 41, 42])
+        XCTAssertEqual(Set(repository.fetchedAnswerIDs()), [40, 41, 42, 43])
         XCTAssertEqual(repository.readHistoryTokens(), ["41"])
 
         await pager.didDisplay(answerID: 42)
         for _ in 0..<10 { await Task.yield() }
 
-        XCTAssertEqual(Set(repository.fetchedAnswerIDs()), [40, 41, 42])
+        XCTAssertEqual(Set(repository.fetchedAnswerIDs()), [40, 41, 42, 43, 44])
         XCTAssertEqual(repository.readHistoryTokens(), ["41", "42"])
     }
 

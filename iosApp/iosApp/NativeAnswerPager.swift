@@ -360,6 +360,7 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
             animated: false
         )
         context.coordinator.recordPagingAvailability()
+        context.coordinator.scheduleAdjacentControllerWarmup(in: controller)
         DispatchQueue.main.async {
             context.coordinator.establishSystemEdgePrecedence(in: controller)
         }
@@ -372,6 +373,7 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
         context.coordinator.updatePinAnswerDate(pinAnswerDate)
         context.coordinator.feedback = NativeAnswerPagerFeedback(action: hapticFeedback)
         context.coordinator.establishSystemEdgePrecedence(in: controller)
+        context.coordinator.scheduleAdjacentControllerWarmup(in: controller)
         guard let visible = controller.viewControllers?.first as? QAHostedAnswerController else { return }
         if visible.answerID != pager.current.id, !context.coordinator.isTransitioning {
             controller.setViewControllers(
@@ -404,6 +406,7 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
         private var recordedCurrentID: Int64?
         private var recordedPreviousID: Int64?
         private var recordedNextID: Int64?
+        private var scheduledWarmControllerIDs: Set<Int64> = []
 
         init(
             pager: AnswerPagerStore,
@@ -424,6 +427,30 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
             created.view.backgroundColor = .systemBackground
             controllers[store.id] = created
             return created
+        }
+
+        /// UIPageViewController asks for neighboring controllers lazily. Build
+        /// their SwiftUI hosting trees one run-loop turn earlier so the swipe
+        /// begins with a laid-out page instead of a loading controller.
+        func scheduleAdjacentControllerWarmup(in pageController: UIPageViewController) {
+            let stores = [pager.previous, pager.next].compactMap { $0 }
+            let pending = stores.filter { scheduledWarmControllerIDs.insert($0.id).inserted }
+            guard !pending.isEmpty else { return }
+            DispatchQueue.main.async { [weak self, weak pageController] in
+                guard let self, let pageController else { return }
+                guard pageController.view.bounds.width > 0,
+                      pageController.view.bounds.height > 0
+                else {
+                    pending.forEach { self.scheduledWarmControllerIDs.remove($0.id) }
+                    return
+                }
+                for store in pending {
+                    let controller = self.controller(for: store)
+                    controller.loadViewIfNeeded()
+                    controller.view.frame = pageController.view.bounds
+                    controller.view.layoutIfNeeded()
+                }
+            }
         }
 
         func refreshHostedRoots() {

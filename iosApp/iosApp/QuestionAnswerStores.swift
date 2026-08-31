@@ -332,6 +332,9 @@ actor UserDefaultsAnswerOpenedHistory: AnswerOpenedHistory {
 
 @MainActor
 final class AnswerPagerStore: ObservableObject {
+    static let previousPreloadCount = 1
+    static let nextPreloadCount = 2
+
     enum ForwardAvailability: Equatable {
         case loading
         case available
@@ -403,12 +406,26 @@ final class AnswerPagerStore: ObservableObject {
     }
 
     func prepare() async {
-        await current.loadIfNeeded()
+        // A feed answer already carries its question ID, so candidate discovery
+        // does not need to wait for the current answer body. Starting both
+        // requests together removes a full network round trip before the first
+        // horizontal swipe can become ready.
+        if current.initialRoute.kind == .answer,
+           current.initialRoute.questionID != nil
+        {
+            let currentLoad = Task { @MainActor [current] in
+                await current.loadIfNeeded()
+            }
+            await prepareNextIfNeeded()
+            await currentLoad.value
+        } else {
+            await current.loadIfNeeded()
+            await prepareNextIfNeeded()
+        }
         if let questionID = current.content?.questionID ?? current.initialRoute.questionID {
             await openedHistory.markOpened(answerID: current.id, questionID: questionID)
         }
-        await prepareNextIfNeeded()
-        await preloadAdjacentAnswers()
+        await preloadNearbyAnswers()
     }
 
     func didDisplay(answerID: Int64) async {
@@ -439,14 +456,14 @@ final class AnswerPagerStore: ObservableObject {
             await openedHistory.markOpened(answerID: current.id, questionID: questionID)
         }
         await prepareNextIfNeeded()
-        await preloadAdjacentAnswers()
+        await preloadNearbyAnswers()
     }
 
     func retrySwitch() async {
         boundaryNotice = nil
         switchError = nil
         await prepareNextIfNeeded(force: true)
-        await preloadAdjacentAnswers()
+        await preloadNearbyAnswers()
     }
 
     @discardableResult
@@ -470,17 +487,20 @@ final class AnswerPagerStore: ObservableObject {
         return created
     }
 
-    private func preloadAdjacentAnswers() async {
-        let previousStore = previous
-        let nextStore = next
-        async let previousLoad: Void = preload(previousStore)
-        async let nextLoad: Void = preload(nextStore)
-        _ = await (previousLoad, nextLoad)
-    }
-
-    private func preload(_ store: AnswerStore?) async {
-        guard let store else { return }
-        await store.preloadIfNeeded()
+    private func preloadNearbyAnswers() async {
+        let lowerBound = max(0, index - Self.previousPreloadCount)
+        let upperBound = min(routes.count - 1, index + Self.nextPreloadCount)
+        guard lowerBound <= upperBound else { return }
+        let nearbyStores = routes[lowerBound...upperBound]
+            .filter { $0.contentID != current.id }
+            .map(store(for:))
+        await withTaskGroup(of: Void.self) { group in
+            for store in nearbyStores {
+                group.addTask {
+                    await store.preloadIfNeeded()
+                }
+            }
+        }
     }
 
     private func prepareNextIfNeeded(force: Bool = false) async {
