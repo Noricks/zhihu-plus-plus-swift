@@ -6,8 +6,6 @@ struct AnswerNativeView: View {
     let pinAnswerDate: Bool
     let onNavigate: (QANavigationIntent) -> Void
 
-    @State private var showsCollections = false
-
     var body: some View {
         Group {
             if let content = store.content {
@@ -30,9 +28,6 @@ struct AnswerNativeView: View {
         // start its view task before the user actually swipes to it, so preload the
         // body here without reporting a false read-history event.
         .task { await store.preloadIfNeeded() }
-        .sheet(isPresented: $showsCollections) {
-            QACollectionsSheet(store: store)
-        }
         .alert(item: messageBinding) { message in
             Alert(
                 title: Text("操作结果"),
@@ -132,75 +127,6 @@ struct AnswerNativeView: View {
             .padding(.horizontal, 18)
             .padding(.vertical, 14)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            AnswerActionBar(
-                content: content,
-                voteInFlight: store.isVoteMutationInFlight,
-                onAuthor: {
-                    if let intent = content.author.personIntent { onNavigate(intent) }
-                },
-                onVoteUp: {
-                    let target: QAVoteState = content.voteState == .up ? .neutral : .up
-                    Task { await store.setVote(target) }
-                },
-                onVoteDown: {
-                    let target: QAVoteState = content.voteState == .down ? .neutral : .down
-                    Task { await store.setVote(target) }
-                },
-                onFavorite: {
-                    showsCollections = true
-                    Task { await store.loadCollections() }
-                },
-                onComments: {
-                    let subject: CommentSubjectDTO = content.route.kind == .answer
-                        ? .answer(content.route.contentID)
-                        : .article(content.route.contentID)
-                    onNavigate(.comments(CommentThreadRouteDTO(
-                        subject: subject,
-                        shareContext: CommentShareContextDTO(
-                            title: content.title,
-                            excerpt: commentShareExcerpt(from: content.blocks),
-                            sourceURL: content.sourceURL
-                        )
-                    )))
-                }
-            )
-        }
-    }
-
-    private func commentShareExcerpt(from blocks: [QABodyBlock]) -> String? {
-        let text = blocks
-            .compactMap(commentShareText)
-            .joined(separator: " ")
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
-        guard !text.isEmpty else { return nil }
-        let limit = text.index(text.startIndex, offsetBy: min(160, text.count))
-        return String(text[..<limit])
-    }
-
-    private func commentShareText(_ block: QABodyBlock) -> String? {
-        switch block {
-        case let .paragraph(_, runs),
-             let .heading(_, _, runs),
-             let .quote(_, runs),
-             let .segment(_, _, runs):
-            return runs.map(\.text).joined()
-        case let .list(_, _, items):
-            return items.flatMap { item in
-                [item.runs.map(\.text).joined()] + item.nestedLists.flatMap(commentShareListText)
-            }.joined(separator: " ")
-        case let .code(_, _, text), let .formula(_, text):
-            return text
-        case .image, .video, .divider:
-            return nil
-        }
-    }
-
-    private func commentShareListText(_ list: QAListGroup) -> [String] {
-        list.items.flatMap { item in
-            [item.runs.map(\.text).joined()] + item.nestedLists.flatMap(commentShareListText)
-        }
     }
 
     private var messageBinding: Binding<QAUserMessage?> {
@@ -281,7 +207,7 @@ private struct QADateMetadata: View {
     }
 }
 
-private struct AnswerActionBar: View {
+struct AnswerActionBar: View {
     let content: AnswerDTO
     let voteInFlight: Bool
     let onAuthor: () -> Void
@@ -291,8 +217,7 @@ private struct AnswerActionBar: View {
     let onComments: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            Divider()
+        NativeFullBleedBottomBar {
             GeometryReader { proxy in
                 let metrics = QAEngagementBarLayoutPolicy.metrics(for: proxy.size.width)
                 actions(metrics: metrics)
@@ -300,11 +225,6 @@ private struct AnswerActionBar: View {
                     .padding(.vertical, metrics.verticalPadding)
             }
             .frame(height: QAEngagementBarLayoutPolicy.contentHeight)
-        }
-        .background {
-            Rectangle()
-                .fill(.bar)
-                .ignoresSafeArea(edges: .bottom)
         }
     }
 
@@ -551,7 +471,7 @@ enum QAEngagementCountFormatter {
     }
 }
 
-private struct QACollectionsSheet: View {
+struct QACollectionsSheet: View {
     @ObservedObject var store: AnswerStore
     @Environment(\.dismiss) private var dismiss
 

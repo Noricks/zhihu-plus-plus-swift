@@ -411,7 +411,7 @@ struct PinNativeView: View {
                     }
                     .padding()
                 }
-                .safeAreaInset(edge: .bottom) { actionBar(detail) }
+                .safeAreaInset(edge: .bottom, spacing: 0) { actionBar(detail) }
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
                         Menu {
@@ -521,18 +521,19 @@ struct PinNativeView: View {
     }
 
     private func actionBar(_ detail: PinDetailDTO) -> some View {
-        HStack(spacing: 24) {
-            Button { Task { await store.toggleLike() } } label: {
-                Label("\(detail.likeCount)", systemImage: detail.isLiked ? "hand.thumbsup.fill" : "hand.thumbsup")
+        NativeFullBleedBottomBar {
+            HStack(spacing: 24) {
+                Button { Task { await store.toggleLike() } } label: {
+                    Label("\(detail.likeCount)", systemImage: detail.isLiked ? "hand.thumbsup.fill" : "hand.thumbsup")
+                }
+                .disabled(store.isMutatingLike)
+                Button { onOpenComments(detail.id) } label: {
+                    Label("\(detail.commentCount)", systemImage: "bubble.left")
+                }
             }
-            .disabled(store.isMutatingLike)
-            Button { onOpenComments(detail.id) } label: {
-                Label("\(detail.commentCount)", systemImage: "bubble.left")
-            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 10)
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 10)
-        .background(.bar)
     }
 
     private func metadata(_ detail: PinDetailDTO) -> String {

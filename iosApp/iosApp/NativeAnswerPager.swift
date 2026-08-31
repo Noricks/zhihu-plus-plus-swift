@@ -34,6 +34,7 @@ private struct QAAnswerPagerSurface: View {
     let hapticFeedback: NativeHapticFeedbackAction
     let onNavigate: (QANavigationIntent) -> Void
     @State private var posterDocument: NativeContentPosterDocument?
+    @State private var showsCollections = false
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -68,6 +69,42 @@ private struct QAAnswerPagerSurface: View {
         }
         .navigationTitle(answer.initialRoute.kind == .answer ? "回答" : "文章")
         .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let content = answer.content {
+                AnswerActionBar(
+                    content: content,
+                    voteInFlight: answer.isVoteMutationInFlight,
+                    onAuthor: {
+                        if let intent = content.author.personIntent { onNavigate(intent) }
+                    },
+                    onVoteUp: {
+                        let target: QAVoteState = content.voteState == .up ? .neutral : .up
+                        Task { await answer.setVote(target) }
+                    },
+                    onVoteDown: {
+                        let target: QAVoteState = content.voteState == .down ? .neutral : .down
+                        Task { await answer.setVote(target) }
+                    },
+                    onFavorite: {
+                        showsCollections = true
+                        Task { await answer.loadCollections() }
+                    },
+                    onComments: {
+                        let subject: CommentSubjectDTO = content.route.kind == .answer
+                            ? .answer(content.route.contentID)
+                            : .article(content.route.contentID)
+                        onNavigate(.comments(CommentThreadRouteDTO(
+                            subject: subject,
+                            shareContext: CommentShareContextDTO(
+                                title: content.title,
+                                excerpt: QACommentShareExcerpt.value(from: content.blocks),
+                                sourceURL: content.sourceURL
+                            )
+                        )))
+                    }
+                )
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 if let content = answer.content {
@@ -92,7 +129,47 @@ private struct QAAnswerPagerSurface: View {
         .sheet(item: $posterDocument) { document in
             NativeContentPosterShareView(document: document)
         }
+        .sheet(isPresented: $showsCollections) {
+            QACollectionsSheet(store: answer)
+        }
         .background(NativeAnswerInteractivePopBridge())
+    }
+}
+
+enum QACommentShareExcerpt {
+    static func value(from blocks: [QABodyBlock]) -> String? {
+        let text = blocks
+            .compactMap(text)
+            .joined(separator: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard !text.isEmpty else { return nil }
+        let limit = text.index(text.startIndex, offsetBy: min(160, text.count))
+        return String(text[..<limit])
+    }
+
+    private static func text(_ block: QABodyBlock) -> String? {
+        switch block {
+        case let .paragraph(_, runs),
+             let .heading(_, _, runs),
+             let .quote(_, runs),
+             let .segment(_, _, runs):
+            return runs.map(\.text).joined()
+        case let .list(_, _, items):
+            return items.flatMap { item in
+                [item.runs.map(\.text).joined()] + item.nestedLists.flatMap(listText)
+            }.joined(separator: " ")
+        case let .code(_, _, text), let .formula(_, text):
+            return text
+        case .image, .video, .divider:
+            return nil
+        }
+    }
+
+    private static func listText(_ list: QAListGroup) -> [String] {
+        list.items.flatMap { item in
+            [item.runs.map(\.text).joined()] + item.nestedLists.flatMap(listText)
+        }
     }
 }
 

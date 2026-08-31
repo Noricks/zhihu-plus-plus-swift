@@ -4,10 +4,50 @@ enum NativeZhihuVisualStyle {
     static let backgroundColor = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark ? .secondarySystemBackground : .systemBackground
     })
+    static let bottomBarColor = Color(uiColor: .secondarySystemBackground)
     static let separatorColor = Color(uiColor: .separator).opacity(0.55)
     static let titlePointSize: CGFloat = 18
     static let summaryPointSize: CGFloat = 16
     static let contentSpacing: CGFloat = 8
+}
+
+/// Keeps controls inside the device safe area while extending the bar's
+/// concrete background through the home-indicator region. This component is
+/// intended for use as the content of `safeAreaInset(edge: .bottom)`.
+enum NativeFullBleedBottomBarLayoutPolicy {
+    static let backgroundSafeAreaRegions: SafeAreaRegions = .container
+    static let backgroundEdges: Edge.Set = .bottom
+}
+
+struct NativeFullBleedBottomBar<Content: View>: View {
+    let backgroundColor: Color
+    let showsTopDivider: Bool
+    let content: Content
+
+    init(
+        backgroundColor: Color = NativeZhihuVisualStyle.bottomBarColor,
+        showsTopDivider: Bool = true,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.backgroundColor = backgroundColor
+        self.showsTopDivider = showsTopDivider
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if showsTopDivider { Divider() }
+            content
+        }
+        .frame(maxWidth: .infinity)
+        .background {
+            backgroundColor
+                .ignoresSafeArea(
+                    NativeFullBleedBottomBarLayoutPolicy.backgroundSafeAreaRegions,
+                    edges: NativeFullBleedBottomBarLayoutPolicy.backgroundEdges
+                )
+        }
+    }
 }
 
 enum FeedItemTitleDisplayMode: Equatable {

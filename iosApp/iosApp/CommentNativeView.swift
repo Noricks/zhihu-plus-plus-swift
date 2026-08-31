@@ -661,14 +661,15 @@ private struct CommentComposerBar: View {
     @FocusState private var isDraftFocused: Bool
 
     var body: some View {
-        Group {
-            if store.composerPresentation.isActive(for: level) {
-                activeComposer
-            } else {
-                collapsedComposer
+        NativeFullBleedBottomBar {
+            Group {
+                if store.composerPresentation.isActive(for: level) {
+                    activeComposer
+                } else {
+                    collapsedComposer
+                }
             }
         }
-        .background(CommentComposerBackground())
         .onChange(of: store.composerPresentation) { presentation in
             isDraftFocused = presentation.isActive(for: level)
         }
@@ -900,16 +901,6 @@ private enum CommentPhotoPickerError: LocalizedError {
     case unreadableImage
 
     var errorDescription: String? { "无法读取所选图片" }
-}
-
-private struct CommentComposerBackground: View {
-    var body: some View {
-        Color(uiColor: .secondarySystemBackground)
-            .ignoresSafeArea(edges: .bottom)
-            .overlay(alignment: .top) {
-                Divider()
-            }
-    }
 }
 
 private struct CommentRichText: View {

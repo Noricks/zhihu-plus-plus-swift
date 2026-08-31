@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import UIKit
 import XCTest
 @testable import iosApp
@@ -40,6 +41,33 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         XCTAssertEqual(narrow.authorWidth, 84)
         XCTAssertEqual(narrow.actionHitArea, 44)
         XCTAssertLessThanOrEqual(narrow.fixedContentWidth, 320)
+    }
+
+    func testBottomBarBackgroundExtendsOnlyThroughContainerBottomSafeArea() {
+        XCTAssertEqual(
+            NativeFullBleedBottomBarLayoutPolicy.backgroundSafeAreaRegions,
+            .container
+        )
+        XCTAssertEqual(NativeFullBleedBottomBarLayoutPolicy.backgroundEdges, .bottom)
+        XCTAssertFalse(NativeFullBleedBottomBarLayoutPolicy.backgroundEdges.contains(.top))
+        XCTAssertFalse(NativeFullBleedBottomBarLayoutPolicy.backgroundEdges.contains(.horizontal))
+    }
+
+    func testPagerOwnedCommentActionKeepsNormalizedExcerpt() {
+        let blocks: [QABodyBlock] = [
+            .paragraph(UUID(), [QAInlineRun(text: "第一段   内容")]),
+            .quote(UUID(), [QAInlineRun(text: "第二段\n内容")]),
+            .image(QAImageDTO(
+                url: URL(string: "https://pic.zhimg.com/example.jpg")!,
+                caption: nil,
+                altText: nil
+            )),
+        ]
+
+        XCTAssertEqual(
+            QACommentShareExcerpt.value(from: blocks),
+            "第一段 内容 第二段 内容"
+        )
     }
 
     func testEngagementTrianglesAreEquilateralAndOpticallyCentered() {
