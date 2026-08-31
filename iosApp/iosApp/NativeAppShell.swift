@@ -317,6 +317,8 @@ struct NativeAppShell: View {
             cacheAccountID: {
                 hostModel.account.identity?.id
             },
+            automaticallyPrefetchesFirstContinuation: true,
+            thumbnailPrefetcher: URLSessionFeedThumbnailPrefetcher(),
             diagnostics: hostModel.performanceDiagnostics.client
         ))
         _followingStore = StateObject(wrappedValue: FollowNativeStore(repository: hostModel.followRepository))

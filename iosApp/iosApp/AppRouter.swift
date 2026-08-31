@@ -137,10 +137,13 @@ final class HostModel: ObservableObject {
         libraryRepository = .live(client: client)
         specialRepository = .live(client: client)
         columnRepository = .live(client: client)
-        homeRecommendationCachePersistence = UserDefaultsHomeRecommendationCachePersistence(
-            defaults: defaults
+        homeRecommendationCachePersistence = FileHomeRecommendationCachePersistence(
+            diagnostics: performanceDiagnostics.client
         )
-        homeRepository = URLSessionHomeFeedRepository(client: client)
+        homeRepository = URLSessionHomeFeedRepository(
+            client: client,
+            diagnostics: performanceDiagnostics.client
+        )
         followRepository = URLSessionFollowRepository(client: client)
         hotRepository = URLSessionHotFeedRepository(client: client)
         searchRepository = URLSessionSearchRepository(client: client)

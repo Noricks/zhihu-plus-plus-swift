@@ -305,6 +305,29 @@ final class HomeFollowStoreTests: XCTestCase {
         XCTAssertEqual(store.items, [initial, paginated])
     }
 
+    func testHomeAutomaticallyPrefetchesFirstContinuationAfterPublishingInitialPage() async {
+        let nextURL = URL(string: "https://www.zhihu.com/api/v3/next")!
+        let repository = CacheHomeRepositoryStub(pages: [
+            FeedPageDTO(items: [feedItem(1)], nextURL: nextURL, isEnd: false),
+            FeedPageDTO(items: [feedItem(2)], nextURL: nil, isEnd: true),
+        ])
+        let store = HomeFeedNativeStore(
+            repository: repository,
+            automaticallyPrefetchesFirstContinuation: true,
+            firstContinuationPrefetchDelayNanoseconds: 0
+        )
+
+        await store.loadInitialIfNeeded()
+        for _ in 0..<20 {
+            if store.items.count >= 2 { break }
+            await Task.yield()
+        }
+
+        XCTAssertEqual(store.items, [feedItem(1), feedItem(2)])
+        let requestCount = await repository.requestCount()
+        XCTAssertEqual(requestCount, 2)
+    }
+
     func testHomeRecordsOnlySuccessfulFirstPageAndPersistsLastViewed() async {
         let initialDate = Date(timeIntervalSince1970: 1_000)
         let clock = FeedRefreshTestClock(initialDate)
@@ -487,6 +510,7 @@ final class HomeFollowStoreTests: XCTestCase {
             cacheAccountID: { accountID },
             now: { now }
         )
+        await store.loadInitialIfNeeded()
         XCTAssertEqual(store.items, [feedItem(1)])
 
         configuration = HomeRecommendationRefreshConfiguration(
@@ -498,6 +522,7 @@ final class HomeFollowStoreTests: XCTestCase {
 
         accountID = "account-b"
         store.accountDidChange()
+        await store.loadInitialIfNeeded()
         XCTAssertEqual(store.items, [feedItem(3)])
 
         accountID = nil
@@ -564,6 +589,56 @@ final class HomeFollowStoreTests: XCTestCase {
             UserDefaultsHomeRecommendationCachePersistence(defaults: defaults)
                 .load(for: context)
         )
+    }
+
+    func testFileHomeCacheBoundsItemsDropsContinuationWhenTruncatedAndExpires() throws {
+        let context = try XCTUnwrap(HomeRecommendationCacheContext(
+            accountID: "account-a",
+            source: .app
+        ))
+        let savedAt = Date(timeIntervalSince1970: 10_000)
+        let snapshot = HomeRecommendationCacheSnapshot(
+            schemaVersion: HomeRecommendationCacheSnapshot.currentSchemaVersion,
+            accountID: context.accountID,
+            source: context.source,
+            items: (1...70).map { feedItem(Int64($0)) },
+            nextURL: URL(string: "https://api.zhihu.com/topstory/recommend?offset=70"),
+            isEnd: false,
+            refreshMetadata: .empty,
+            savedAt: savedAt
+        )
+
+        let bounded = try XCTUnwrap(FileHomeRecommendationCachePolicy.snapshotForStorage(
+            snapshot,
+            context: context,
+            expectedSchemaVersion: HomeRecommendationCacheSnapshot.currentSchemaVersion
+        ))
+
+        XCTAssertEqual(bounded.items.count, FileHomeRecommendationCachePolicy.maximumItemCount)
+        XCTAssertNil(bounded.nextURL)
+        XCTAssertTrue(bounded.isEnd)
+        XCTAssertTrue(FileHomeRecommendationCachePolicy.isFresh(
+            savedAt: savedAt,
+            now: savedAt.addingTimeInterval(FileHomeRecommendationCachePolicy.maximumAge)
+        ))
+        XCTAssertFalse(FileHomeRecommendationCachePolicy.isFresh(
+            savedAt: savedAt,
+            now: savedAt.addingTimeInterval(FileHomeRecommendationCachePolicy.maximumAge + 1)
+        ))
+    }
+
+    func testThumbnailPrefetchSelectsOnlyBoundedTrustedUniqueURLs() {
+        let trusted = URL(string: "https://pic1.zhimg.com/example.jpg")!
+        let second = URL(string: "https://www.zhihu.com/image/second.jpg")!
+        let untrusted = URL(string: "https://attacker.example/image.jpg")!
+        let items = [
+            feedItem(1, thumbnailURL: trusted),
+            feedItem(2, thumbnailURL: trusted),
+            feedItem(3, thumbnailURL: untrusted),
+            feedItem(4, thumbnailURL: second),
+        ]
+
+        XCTAssertEqual(URLSessionFeedThumbnailPrefetcher.urls(from: items), [trusted, second])
     }
 
     func testHomeManualRefreshReplacesFirstPageAndRecordsCurrentTime() async {
@@ -1118,7 +1193,8 @@ final class HomeFollowStoreTests: XCTestCase {
 
     private func feedItem(
         _ id: Int64,
-        questionAuthor: FeedAuthorDTO? = nil
+        questionAuthor: FeedAuthorDTO? = nil,
+        thumbnailURL: URL? = nil
     ) -> FeedItemDTO {
         FeedItemDTO(
             id: FeedItemID(kind: .article, contentID: String(id)),
@@ -1129,7 +1205,7 @@ final class HomeFollowStoreTests: XCTestCase {
             sourceLabel: nil,
             author: nil,
             questionAuthor: questionAuthor,
-            thumbnailURL: nil,
+            thumbnailURL: thumbnailURL,
             route: .article(articleID: id, title: "文章 \(id)")
         )
     }
@@ -1173,19 +1249,22 @@ private final class InMemoryFeedRefreshMetadataPersistence: FeedChannelRefreshMe
 }
 
 private final class InMemoryHomeRecommendationCachePersistence:
-    HomeRecommendationCachePersisting {
+    HomeRecommendationCachePersisting,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
     private var snapshots:
         [HomeRecommendationCacheContext: HomeRecommendationCacheSnapshot] = [:]
 
     func load(for context: HomeRecommendationCacheContext) -> HomeRecommendationCacheSnapshot? {
-        snapshots[context]
+        lock.withLock { snapshots[context] }
     }
 
     func save(
         _ snapshot: HomeRecommendationCacheSnapshot,
         for context: HomeRecommendationCacheContext
     ) {
-        snapshots[context] = snapshot
+        lock.withLock { snapshots[context] = snapshot }
     }
 }
 
