@@ -22,15 +22,18 @@ enum NativeFullBleedBottomBarLayoutPolicy {
 struct NativeFullBleedBottomBar<Content: View>: View {
     let backgroundColor: Color
     let showsTopDivider: Bool
+    let bottomSafeAreaOverlap: CGFloat
     let content: Content
 
     init(
         backgroundColor: Color = NativeZhihuVisualStyle.bottomBarColor,
         showsTopDivider: Bool = true,
+        bottomSafeAreaOverlap: CGFloat = 0,
         @ViewBuilder content: () -> Content
     ) {
         self.backgroundColor = backgroundColor
         self.showsTopDivider = showsTopDivider
+        self.bottomSafeAreaOverlap = max(0, bottomSafeAreaOverlap)
         self.content = content()
     }
 
@@ -47,6 +50,11 @@ struct NativeFullBleedBottomBar<Content: View>: View {
                     edges: NativeFullBleedBottomBarLayoutPolicy.backgroundEdges
                 )
         }
+        // A negative outer inset lets compact controls use a small, explicit
+        // portion of the home-indicator safe area while the background remains
+        // full bleed. Callers keep the default zero overlap unless they can
+        // measure the device's actual bottom safe-area inset.
+        .padding(.bottom, -bottomSafeAreaOverlap)
     }
 }
 

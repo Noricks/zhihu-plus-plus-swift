@@ -210,6 +210,7 @@ private struct QADateMetadata: View {
 struct AnswerActionBar: View {
     let content: AnswerDTO
     let voteInFlight: Bool
+    let bottomSafeAreaOverlap: CGFloat
     let onAuthor: () -> Void
     let onVoteUp: () -> Void
     let onVoteDown: () -> Void
@@ -217,7 +218,7 @@ struct AnswerActionBar: View {
     let onComments: () -> Void
 
     var body: some View {
-        NativeFullBleedBottomBar {
+        NativeFullBleedBottomBar(bottomSafeAreaOverlap: bottomSafeAreaOverlap) {
             GeometryReader { proxy in
                 let metrics = QAEngagementBarLayoutPolicy.metrics(for: proxy.size.width)
                 actions(metrics: metrics)
@@ -429,14 +430,23 @@ struct QAEngagementBarLayoutMetrics: Equatable {
 }
 
 enum QAEngagementBarLayoutPolicy {
-    static let contentHeight: CGFloat = 56
+    static let contentHeight: CGFloat = 52
+    static let minimumHomeIndicatorClearance: CGFloat = 18
+    static let maximumSafeAreaOverlap: CGFloat = 16
+
+    static func safeAreaOverlap(for bottomSafeAreaInset: CGFloat) -> CGFloat {
+        min(
+            maximumSafeAreaOverlap,
+            max(0, bottomSafeAreaInset - minimumHomeIndicatorClearance)
+        )
+    }
 
     static func metrics(for containerWidth: CGFloat) -> QAEngagementBarLayoutMetrics {
         let isWide = containerWidth >= 414
         let isRegular = containerWidth >= 375
         return QAEngagementBarLayoutMetrics(
             horizontalPadding: isWide ? 16 : (isRegular ? 12 : 8),
-            verticalPadding: 6,
+            verticalPadding: 4,
             sectionSpacing: isWide ? 10 : (isRegular ? 8 : 6),
             actionSpacing: isWide ? 8 : (isRegular ? 6 : 2),
             actionHitArea: 44,

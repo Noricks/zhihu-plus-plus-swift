@@ -53,6 +53,18 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         XCTAssertFalse(NativeFullBleedBottomBarLayoutPolicy.backgroundEdges.contains(.horizontal))
     }
 
+    func testAnswerBarUsesHomeIndicatorSafeAreaWithoutCoveringIt() {
+        XCTAssertEqual(QAEngagementBarLayoutPolicy.contentHeight, 52)
+        XCTAssertEqual(QAEngagementBarLayoutPolicy.safeAreaOverlap(for: 0), 0)
+        XCTAssertEqual(QAEngagementBarLayoutPolicy.safeAreaOverlap(for: 20), 2)
+        XCTAssertEqual(QAEngagementBarLayoutPolicy.safeAreaOverlap(for: 34), 16)
+        XCTAssertEqual(QAEngagementBarLayoutPolicy.safeAreaOverlap(for: 60), 16)
+        XCTAssertGreaterThanOrEqual(
+            34 - QAEngagementBarLayoutPolicy.safeAreaOverlap(for: 34),
+            QAEngagementBarLayoutPolicy.minimumHomeIndicatorClearance
+        )
+    }
+
     func testPagerOwnedCommentActionKeepsNormalizedExcerpt() {
         let blocks: [QABodyBlock] = [
             .paragraph(UUID(), [QAInlineRun(text: "第一段   内容")]),

@@ -37,102 +37,107 @@ private struct QAAnswerPagerSurface: View {
     @State private var showsCollections = false
 
     var body: some View {
-        ZStack(alignment: .top) {
-            QAAnswerPageController(
-                pager: pager,
-                pinAnswerDate: preferences.pinAnswerDate,
-                hapticFeedback: hapticFeedback,
-                onNavigate: onNavigate
-            )
-            if let error = pager.switchError {
-                Button {
-                    Task { await pager.retrySwitch() }
-                } label: {
-                    Label("下一个回答加载失败，点此重试", systemImage: "arrow.clockwise")
+        GeometryReader { proxy in
+            ZStack(alignment: .top) {
+                QAAnswerPageController(
+                    pager: pager,
+                    pinAnswerDate: preferences.pinAnswerDate,
+                    hapticFeedback: hapticFeedback,
+                    onNavigate: onNavigate
+                )
+                if let error = pager.switchError {
+                    Button {
+                        Task { await pager.retrySwitch() }
+                    } label: {
+                        Label("下一个回答加载失败，点此重试", systemImage: "arrow.clockwise")
+                            .font(.caption)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(.thinMaterial, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint(error)
+                    .padding(.top, 8)
+                } else if let notice = pager.boundaryNotice {
+                    Text(notice)
                         .font(.caption)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(.thinMaterial, in: Capsule())
+                        .accessibilityAddTraits(.isStaticText)
+                        .padding(.top, 8)
                 }
-                .buttonStyle(.plain)
-                .accessibilityHint(error)
-                .padding(.top, 8)
-            } else if let notice = pager.boundaryNotice {
-                Text(notice)
-                    .font(.caption)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(.thinMaterial, in: Capsule())
-                    .accessibilityAddTraits(.isStaticText)
-                    .padding(.top, 8)
             }
-        }
-        .navigationTitle(answer.initialRoute.kind == .answer ? "回答" : "文章")
-        .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let content = answer.content {
-                AnswerActionBar(
-                    content: content,
-                    voteInFlight: answer.isVoteMutationInFlight,
-                    onAuthor: {
-                        if let intent = content.author.personIntent { onNavigate(intent) }
-                    },
-                    onVoteUp: {
-                        let target: QAVoteState = content.voteState == .up ? .neutral : .up
-                        Task { await answer.setVote(target) }
-                    },
-                    onVoteDown: {
-                        let target: QAVoteState = content.voteState == .down ? .neutral : .down
-                        Task { await answer.setVote(target) }
-                    },
-                    onFavorite: {
-                        showsCollections = true
-                        Task { await answer.loadCollections() }
-                    },
-                    onComments: {
-                        let subject: CommentSubjectDTO = content.route.kind == .answer
-                            ? .answer(content.route.contentID)
-                            : .article(content.route.contentID)
-                        onNavigate(.comments(CommentThreadRouteDTO(
-                            subject: subject,
-                            shareContext: CommentShareContextDTO(
-                                title: content.title,
-                                excerpt: QACommentShareExcerpt.value(from: content.blocks),
-                                sourceURL: content.sourceURL
-                            )
-                        )))
-                    }
-                )
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            .navigationTitle(answer.initialRoute.kind == .answer ? "回答" : "文章")
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 if let content = answer.content {
-                    Menu {
-                        Button {
-                            UIPasteboard.general.url = content.sourceURL
-                        } label: {
-                            Label("复制链接", systemImage: "doc.on.doc")
+                    AnswerActionBar(
+                        content: content,
+                        voteInFlight: answer.isVoteMutationInFlight,
+                        bottomSafeAreaOverlap: QAEngagementBarLayoutPolicy.safeAreaOverlap(
+                            for: proxy.safeAreaInsets.bottom
+                        ),
+                        onAuthor: {
+                            if let intent = content.author.personIntent { onNavigate(intent) }
+                        },
+                        onVoteUp: {
+                            let target: QAVoteState = content.voteState == .up ? .neutral : .up
+                            Task { await answer.setVote(target) }
+                        },
+                        onVoteDown: {
+                            let target: QAVoteState = content.voteState == .down ? .neutral : .down
+                            Task { await answer.setVote(target) }
+                        },
+                        onFavorite: {
+                            showsCollections = true
+                            Task { await answer.loadCollections() }
+                        },
+                        onComments: {
+                            let subject: CommentSubjectDTO = content.route.kind == .answer
+                                ? .answer(content.route.contentID)
+                                : .article(content.route.contentID)
+                            onNavigate(.comments(CommentThreadRouteDTO(
+                                subject: subject,
+                                shareContext: CommentShareContextDTO(
+                                    title: content.title,
+                                    excerpt: QACommentShareExcerpt.value(from: content.blocks),
+                                    sourceURL: content.sourceURL
+                                )
+                            )))
                         }
-                        Button {
-                            posterDocument = NativeContentPosterDocument(answer: content)
-                        } label: {
-                            Label("分享内容海报", systemImage: "photo.on.rectangle.angled")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                    }
-                    .accessibilityLabel("更多操作")
+                    )
                 }
             }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    if let content = answer.content {
+                        Menu {
+                            Button {
+                                UIPasteboard.general.url = content.sourceURL
+                            } label: {
+                                Label("复制链接", systemImage: "doc.on.doc")
+                            }
+                            Button {
+                                posterDocument = NativeContentPosterDocument(answer: content)
+                            } label: {
+                                Label("分享内容海报", systemImage: "photo.on.rectangle.angled")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                        }
+                        .accessibilityLabel("更多操作")
+                    }
+                }
+            }
+            .sheet(item: $posterDocument) { document in
+                NativeContentPosterShareView(document: document)
+            }
+            .sheet(isPresented: $showsCollections) {
+                QACollectionsSheet(store: answer)
+            }
+            .background(NativeAnswerInteractivePopBridge())
         }
-        .sheet(item: $posterDocument) { document in
-            NativeContentPosterShareView(document: document)
-        }
-        .sheet(isPresented: $showsCollections) {
-            QACollectionsSheet(store: answer)
-        }
-        .background(NativeAnswerInteractivePopBridge())
     }
 }
 
