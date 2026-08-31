@@ -110,13 +110,40 @@ struct NativeRootHeaderVisibility {
 }
 
 struct NativeHomeRefreshIndicatorPresentation {
-    static let minimumPullDistance: CGFloat = 8
+    static let fullyRevealedPullDistance: CGFloat = 30
+    static let minimumScale: CGFloat = 0.72
+
+    static func progress(
+        pullDistance: CGFloat,
+        isRefreshing: Bool
+    ) -> CGFloat {
+        guard !isRefreshing else { return 1 }
+        let normalized = min(max(pullDistance / fullyRevealedPullDistance, 0), 1)
+        return 1 - (1 - normalized) * (1 - normalized)
+    }
 
     static func isVisible(
         pullDistance: CGFloat,
         isRefreshing: Bool
     ) -> Bool {
-        isRefreshing || pullDistance >= minimumPullDistance
+        progress(pullDistance: pullDistance, isRefreshing: isRefreshing) > 0
+    }
+
+    static func opacity(
+        pullDistance: CGFloat,
+        isRefreshing: Bool
+    ) -> Double {
+        Double(progress(pullDistance: pullDistance, isRefreshing: isRefreshing))
+    }
+
+    static func scale(
+        pullDistance: CGFloat,
+        isRefreshing: Bool
+    ) -> CGFloat {
+        minimumScale + (1 - minimumScale) * progress(
+            pullDistance: pullDistance,
+            isRefreshing: isRefreshing
+        )
     }
 }
 
@@ -181,19 +208,27 @@ struct NativeRootLargeTitle: View {
                 Color.clear
                     .frame(height: NativeHomeHeaderLayoutPolicy.expandedHeaderHeight)
                     .overlay(alignment: .top) {
-                        if NativeHomeRefreshIndicatorPresentation.isVisible(
-                            pullDistance: pullDistance,
-                            isRefreshing: isRefreshing
-                        ) {
-                            // The native refresh control lives above this transparent spacer
-                            // and is covered by the fixed opaque header. Keeping one indicator
-                            // inside the spacer makes it enter the revealed overscroll region.
-                            ProgressView()
-                                .controlSize(.regular)
-                                .padding(.top, 14)
-                                .accessibilityLabel("正在更新")
-                                .accessibilityIdentifier("home_refresh_indicator")
-                        }
+                        // The native refresh control lives above this transparent spacer
+                        // and is covered by the fixed opaque header. This duplicate visual
+                        // follows the pull continuously so it does not pop in abruptly.
+                        ProgressView()
+                            .controlSize(.regular)
+                            .padding(.top, 14)
+                            .opacity(NativeHomeRefreshIndicatorPresentation.opacity(
+                                pullDistance: pullDistance,
+                                isRefreshing: isRefreshing
+                            ))
+                            .scaleEffect(NativeHomeRefreshIndicatorPresentation.scale(
+                                pullDistance: pullDistance,
+                                isRefreshing: isRefreshing
+                            ))
+                            .animation(.easeOut(duration: 0.16), value: isRefreshing)
+                            .accessibilityHidden(!NativeHomeRefreshIndicatorPresentation.isVisible(
+                                pullDistance: pullDistance,
+                                isRefreshing: isRefreshing
+                            ))
+                            .accessibilityLabel("正在更新")
+                            .accessibilityIdentifier("home_refresh_indicator")
                     }
             }
         }

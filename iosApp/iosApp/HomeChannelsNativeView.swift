@@ -92,7 +92,8 @@ struct HomeChannelsNativeView: View {
                 refreshPresentations.presentation(for: $0).statusText(
                     now: refreshStatusNow
                 )
-            }
+            },
+            onPrefetch: prefetchChannel
         ) { channel in
             channelContent(channel)
         }
@@ -354,6 +355,23 @@ struct HomeChannelsNativeView: View {
         case .following: await followingStore.refresh(section: .moments)
         case .hot: await hotStore.refresh()
         case .daily: await dailyStore.refresh()
+        }
+    }
+
+    private func prefetchChannel(_ channel: HomeChannel) {
+        guard isOperationallyVisible else { return }
+        Task { @MainActor in
+            guard isOperationallyVisible else { return }
+            switch channel {
+            case .recommendation:
+                await recommendationStore.loadInitialIfNeeded()
+            case .following:
+                await followingStore.loadMomentsIfNeeded()
+            case .hot:
+                await hotStore.loadInitialIfNeeded()
+            case .daily:
+                await dailyStore.loadInitialIfNeeded()
+            }
         }
     }
 

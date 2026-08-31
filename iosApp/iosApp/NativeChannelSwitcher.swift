@@ -9,6 +9,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
 
     private let title: (Channel) -> String
     private let status: (Channel) -> String?
+    private let onPrefetch: (Channel) -> Void
     private let content: (Channel) -> ChannelContent
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -16,6 +17,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
     @Namespace private var swipeCoordinateSpace
     @State private var dragTranslation: CGFloat = 0
     @State private var swipeExclusionFrames: [CGRect] = []
+    @State private var didPrefetchDuringCurrentSwipe = false
 
     init(
         channels: [Channel],
@@ -23,6 +25,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
         isEnabled: Bool = true,
         title: @escaping (Channel) -> String,
         status: @escaping (Channel) -> String? = { _ in nil },
+        onPrefetch: @escaping (Channel) -> Void = { _ in },
         @ViewBuilder content: @escaping (Channel) -> ChannelContent
     ) {
         self.channels = channels
@@ -30,6 +33,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
         self.isEnabled = isEnabled
         self.title = title
         self.status = status
+        self.onPrefetch = onPrefetch
         self.content = content
     }
 
@@ -63,7 +67,13 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
         .onChange(of: reduceMotion) { shouldReduceMotion in
             if shouldReduceMotion { dragTranslation = 0 }
         }
-        .onDisappear { dragTranslation = 0 }
+        .onChange(of: selection) { _ in
+            didPrefetchDuringCurrentSwipe = false
+        }
+        .onChange(of: isEnabled) { enabled in
+            if !enabled { resetChannelSwipe() }
+        }
+        .onDisappear { resetChannelSwipe() }
     }
 
     private var fixedHeader: some View {
@@ -127,6 +137,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
             channelCount: channels.count,
             containerWidth: containerWidth
         )
+        prefetchAdjacentChannelIfNeeded()
     }
 
     private func cancelChannelSwipe() {
@@ -137,6 +148,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
                 dragTranslation = 0
             }
         }
+        didPrefetchDuringCurrentSwipe = false
     }
 
     private func commitChannelSwipe(
@@ -166,6 +178,24 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
             }
         }
         if targetIndex != currentIndex { hapticFeedback(.commit) }
+        didPrefetchDuringCurrentSwipe = false
+    }
+
+    private func prefetchAdjacentChannelIfNeeded() {
+        guard !didPrefetchDuringCurrentSwipe,
+              let targetIndex = NativeChannelPrefetchPolicy.targetIndex(
+                currentIndex: selectedChannelIndex,
+                channelCount: channels.count,
+                translation: dragTranslation
+              )
+        else { return }
+        didPrefetchDuringCurrentSwipe = true
+        onPrefetch(channels[targetIndex])
+    }
+
+    private func resetChannelSwipe() {
+        dragTranslation = 0
+        didPrefetchDuringCurrentSwipe = false
     }
 }
 
@@ -203,6 +233,26 @@ struct NativeChannelPageTransitionPolicy {
         if currentIndex == 0, rawTranslation > 0 { return 0 }
         if currentIndex == channelCount - 1, rawTranslation < 0 { return 0 }
         return min(max(rawTranslation, -containerWidth), containerWidth)
+    }
+}
+
+struct NativeChannelPrefetchPolicy {
+    static let minimumTranslation: CGFloat = 12
+
+    static func targetIndex(
+        currentIndex: Int,
+        channelCount: Int,
+        translation: CGFloat
+    ) -> Int? {
+        guard channelCount > 0,
+              currentIndex >= 0,
+              currentIndex < channelCount,
+              abs(translation) >= minimumTranslation,
+              translation != 0
+        else { return nil }
+
+        let targetIndex = translation > 0 ? currentIndex - 1 : currentIndex + 1
+        return (0..<channelCount).contains(targetIndex) ? targetIndex : nil
     }
 }
 
@@ -637,7 +687,6 @@ struct NativeChannelSwipePolicy {
 
 private enum NativeChannelSwitcherTuning {
     // Gesture recognition and commit thresholds reuse the media gallery's existing policy.
-    static let minimumDragDistance: CGFloat = 12
     static let horizontalIntentRatio: CGFloat = 1.15
     static let distanceThresholdRatio: CGFloat = 0.18
     static let projectedDistanceMultiplier: CGFloat = 1.35

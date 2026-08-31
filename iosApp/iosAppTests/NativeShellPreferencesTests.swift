@@ -479,23 +479,57 @@ final class NativeShellPreferencesTests: XCTestCase {
         XCTAssertTrue(presentations.presentation(for: .daily).isRefreshing)
     }
 
-    func testHomeRefreshIndicatorAppearsForPullOrRefreshAndOtherwiseDisappears() {
+    func testHomeRefreshIndicatorAppearsFromFirstPullPointAndStaysVisibleWhileRefreshing() {
         XCTAssertFalse(NativeHomeRefreshIndicatorPresentation.isVisible(
             pullDistance: 0,
             isRefreshing: false
         ))
-        XCTAssertFalse(NativeHomeRefreshIndicatorPresentation.isVisible(
-            pullDistance: 7.9,
-            isRefreshing: false
-        ))
         XCTAssertTrue(NativeHomeRefreshIndicatorPresentation.isVisible(
-            pullDistance: 8,
+            pullDistance: 1,
             isRefreshing: false
         ))
         XCTAssertTrue(NativeHomeRefreshIndicatorPresentation.isVisible(
             pullDistance: 0,
             isRefreshing: true
         ))
+    }
+
+    func testHomeRefreshIndicatorProgressivelyFadesAndScalesWithoutOvershooting() {
+        let distances: [CGFloat] = [-10, 0, 1, 10, 20, 30, 60]
+        let progresses = distances.map {
+            NativeHomeRefreshIndicatorPresentation.progress(
+                pullDistance: $0,
+                isRefreshing: false
+            )
+        }
+
+        XCTAssertEqual(progresses.first ?? -1, 0, accuracy: 0.001)
+        XCTAssertEqual(progresses.last ?? -1, 1, accuracy: 0.001)
+        XCTAssertEqual(progresses, progresses.sorted())
+
+        for distance in distances {
+            let opacity = NativeHomeRefreshIndicatorPresentation.opacity(
+                pullDistance: distance,
+                isRefreshing: false
+            )
+            let scale = NativeHomeRefreshIndicatorPresentation.scale(
+                pullDistance: distance,
+                isRefreshing: false
+            )
+            XCTAssertGreaterThanOrEqual(opacity, 0)
+            XCTAssertLessThanOrEqual(opacity, 1)
+            XCTAssertGreaterThanOrEqual(scale, NativeHomeRefreshIndicatorPresentation.minimumScale)
+            XCTAssertLessThanOrEqual(scale, 1)
+        }
+
+        XCTAssertEqual(NativeHomeRefreshIndicatorPresentation.opacity(
+            pullDistance: 0,
+            isRefreshing: true
+        ), 1)
+        XCTAssertEqual(NativeHomeRefreshIndicatorPresentation.scale(
+            pullDistance: 0,
+            isRefreshing: true
+        ), 1)
     }
 
     func testHomeTabDoubleTapRequiresTwoReselectEventsAndTriggersOncePerPair() {
@@ -637,6 +671,18 @@ final class NativeShellPreferencesTests: XCTestCase {
         XCTAssertTrue(NativeRefreshHapticPolicy.shouldEmit(
             previousSuccessfulRefreshAt: firstSuccess,
             currentSuccessfulRefreshAt: nextSuccess
+        ))
+    }
+
+    func testRefreshSuccessHapticUsesGentlerEventIntensity() {
+        let refreshIntensity = NativeHapticFeedbackIntensityPolicy.intensity(for: .refreshSucceeded)
+
+        XCTAssertEqual(refreshIntensity, 0.55, accuracy: 0.001)
+        XCTAssertGreaterThan(refreshIntensity, NativeHapticFeedbackIntensityPolicy.intensity(
+            for: .refreshIgnored
+        ))
+        XCTAssertLessThan(refreshIntensity, NativeHapticFeedbackIntensityPolicy.intensity(
+            for: .commit
         ))
     }
 
@@ -829,6 +875,42 @@ final class NativeShellPreferencesTests: XCTestCase {
         XCTAssertFalse(NativeChannelSwipePolicy.shouldBegin(velocity: CGPoint(x: 20, y: 300)))
         XCTAssertFalse(NativeChannelSwipePolicy.shouldBegin(velocity: CGPoint(x: 100, y: 100)))
         XCTAssertTrue(NativeChannelSwipePolicy.shouldBegin(velocity: CGPoint(x: 300, y: 20)))
+    }
+
+    func testChannelSwipePrefetchesTheAdjacentPageAfterAShortHorizontalMove() {
+        XCTAssertNil(NativeChannelPrefetchPolicy.targetIndex(
+            currentIndex: 1,
+            channelCount: 4,
+            translation: 11.9
+        ))
+        XCTAssertEqual(NativeChannelPrefetchPolicy.targetIndex(
+            currentIndex: 1,
+            channelCount: 4,
+            translation: 12
+        ), 0)
+        XCTAssertEqual(NativeChannelPrefetchPolicy.targetIndex(
+            currentIndex: 1,
+            channelCount: 4,
+            translation: -12
+        ), 2)
+    }
+
+    func testChannelSwipePrefetchNeverCrossesAnEdgeOrUsesInvalidState() {
+        XCTAssertNil(NativeChannelPrefetchPolicy.targetIndex(
+            currentIndex: 0,
+            channelCount: 4,
+            translation: 40
+        ))
+        XCTAssertNil(NativeChannelPrefetchPolicy.targetIndex(
+            currentIndex: 3,
+            channelCount: 4,
+            translation: -40
+        ))
+        XCTAssertNil(NativeChannelPrefetchPolicy.targetIndex(
+            currentIndex: 0,
+            channelCount: 0,
+            translation: -40
+        ))
     }
 
     private func makeDefaults() -> UserDefaults {
