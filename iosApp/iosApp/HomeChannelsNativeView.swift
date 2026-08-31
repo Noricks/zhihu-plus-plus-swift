@@ -97,6 +97,10 @@ struct HomeChannelsNativeView: View {
         ) { channel in
             channelContent(channel)
         }
+        .background {
+            NativeZhihuVisualStyle.backgroundColor
+                .ignoresSafeArea()
+        }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(isOperationallyVisible ? .hidden : .visible, for: .navigationBar)

@@ -327,9 +327,14 @@ struct NativeAppShell: View {
     }
 
     var body: some View {
-        tabBarBehavior(
-            appTabView
-        )
+        ZStack {
+            NativeZhihuVisualStyle.backgroundColor
+                .ignoresSafeArea()
+
+            tabBarBehavior(
+                appTabView
+            )
+        }
         .background(
             NativeTabTapObserver(
                 isEnabled: true,
@@ -485,6 +490,8 @@ struct NativeAppShell: View {
                     tabNavigationStack(for: .search)
                 }
             }
+            .toolbarBackground(NativeZhihuVisualStyle.backgroundColor, for: .tabBar)
+            .toolbarBackground(.visible, for: .tabBar)
         } else {
             TabView(selection: tabSelection) {
                 ForEach(NativeAppTab.fixedBottomBarTabs) { tab in
@@ -493,6 +500,8 @@ struct NativeAppShell: View {
                         .tag(tab)
                 }
             }
+            .toolbarBackground(NativeZhihuVisualStyle.backgroundColor, for: .tabBar)
+            .toolbarBackground(.visible, for: .tabBar)
         }
     }
 
