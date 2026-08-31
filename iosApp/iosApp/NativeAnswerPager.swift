@@ -139,7 +139,7 @@ private struct QAAnswerPagerSurface: View {
 enum QACommentShareExcerpt {
     static func value(from blocks: [QABodyBlock]) -> String? {
         let text = blocks
-            .compactMap(text)
+            .compactMap(visibleText)
             .joined(separator: " ")
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
@@ -148,7 +148,7 @@ enum QACommentShareExcerpt {
         return String(text[..<limit])
     }
 
-    private static func text(_ block: QABodyBlock) -> String? {
+    private static func visibleText(_ block: QABodyBlock) -> String? {
         switch block {
         case let .paragraph(_, runs),
              let .heading(_, _, runs),
