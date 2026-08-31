@@ -348,6 +348,10 @@ struct HomeNativeView: View {
                     .listRowInsets(EdgeInsets(top: 7, leading: 16, bottom: 7, trailing: 16))
                     .listRowBackground(NativeZhihuVisualStyle.backgroundColor)
                     .listRowSeparatorTint(NativeZhihuVisualStyle.separatorColor)
+                    .onAppear {
+                        guard isActiveChannel else { return }
+                        Task { await store.prefetchNextPageIfNeeded(after: item.id) }
+                    }
                 }
 
                 if let message = store.errorMessage {

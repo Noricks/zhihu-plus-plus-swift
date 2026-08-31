@@ -266,6 +266,7 @@ final class HomeFeedNativeStore: ObservableObject {
     private static let maximumRefreshRequests = 6
     private static let maximumConsecutivePagesWithoutNewItems = 2
     private static let refreshTimeout: TimeInterval = 15
+    private static let paginationPrefetchDistance = 5
 
     init(
         repository: HomeFeedRepository,
@@ -416,6 +417,15 @@ final class HomeFeedNativeStore: ObservableObject {
             failedOperation = .nextPage
         }
         if currentGeneration == generation { isLoading = false }
+    }
+
+    func prefetchNextPageIfNeeded(after itemID: FeedItemID) async {
+        guard hasNextPage,
+              let itemIndex = items.firstIndex(where: { $0.id == itemID })
+        else { return }
+        let remainingItemCount = items.distance(from: itemIndex, to: items.endIndex)
+        guard remainingItemCount <= Self.paginationPrefetchDistance else { return }
+        await loadMore()
     }
 
     func retry() async {

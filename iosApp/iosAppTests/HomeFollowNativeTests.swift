@@ -253,6 +253,58 @@ final class HomeFollowStoreTests: XCTestCase {
         XCTAssertFalse(store.hasNextPage)
     }
 
+    func testHomePrefetchesNextPageWithinFiveItemsOfEndAndPreservesOrder() async {
+        let nextURL = URL(string: "https://www.zhihu.com/api/v3/next")!
+        let initialItems = (1 ... 10).map { feedItem(Int64($0)) }
+        let repository = CacheHomeRepositoryStub(pages: [
+            FeedPageDTO(items: initialItems, nextURL: nextURL, isEnd: false),
+            FeedPageDTO(
+                items: [feedItem(10), feedItem(11), feedItem(12)],
+                nextURL: nil,
+                isEnd: true
+            ),
+        ])
+        let store = HomeFeedNativeStore(repository: repository)
+        await store.loadInitialIfNeeded()
+
+        await store.prefetchNextPageIfNeeded(after: feedItem(5).id)
+        let requestsBeforeThreshold = await repository.requestCount()
+        XCTAssertEqual(requestsBeforeThreshold, 1)
+        XCTAssertEqual(store.items, initialItems)
+
+        await store.prefetchNextPageIfNeeded(after: feedItem(6).id)
+        let requestsAfterThreshold = await repository.requestCount()
+        XCTAssertEqual(requestsAfterThreshold, 2)
+        XCTAssertEqual(store.items, initialItems + [feedItem(11), feedItem(12)])
+        XCTAssertFalse(store.hasNextPage)
+    }
+
+    func testHomeConcurrentPrefetchTriggersOnlyOnePaginationRequest() async {
+        let nextURL = URL(string: "https://www.zhihu.com/api/v3/next")!
+        let initial = feedItem(1)
+        let paginated = feedItem(2)
+        let repository = HomePaginationRefreshRepositoryStub(
+            initial: FeedPageDTO(items: [initial], nextURL: nextURL, isEnd: false),
+            paginated: FeedPageDTO(items: [paginated], nextURL: nil, isEnd: true),
+            refreshed: FeedPageDTO(items: [], nextURL: nil, isEnd: true)
+        )
+        let store = HomeFeedNativeStore(repository: repository)
+        await store.loadInitialIfNeeded()
+
+        let firstPrefetch = Task {
+            await store.prefetchNextPageIfNeeded(after: initial.id)
+        }
+        await repository.waitUntilPaginationStarts()
+        await store.prefetchNextPageIfNeeded(after: initial.id)
+
+        let requestsWhilePrefetching = await repository.requestedURLs()
+        XCTAssertEqual(requestsWhilePrefetching, [nil, nextURL])
+
+        await repository.resumePagination()
+        await firstPrefetch.value
+        XCTAssertEqual(store.items, [initial, paginated])
+    }
+
     func testHomeRecordsOnlySuccessfulFirstPageAndPersistsLastViewed() async {
         let initialDate = Date(timeIntervalSince1970: 1_000)
         let clock = FeedRefreshTestClock(initialDate)
