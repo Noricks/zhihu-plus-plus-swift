@@ -129,7 +129,7 @@ struct AnswerNativeView: View {
             .padding(.horizontal, 18)
             .padding(.vertical, 14)
         }
-        .safeAreaInset(edge: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             AnswerActionBar(
                 content: content,
                 voteInFlight: store.isVoteMutationInFlight,
@@ -290,50 +290,64 @@ private struct AnswerActionBar: View {
     var body: some View {
         VStack(spacing: 0) {
             Divider()
-            actions
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+            GeometryReader { proxy in
+                let metrics = QAEngagementBarLayoutPolicy.metrics(for: proxy.size.width)
+                actions(metrics: metrics)
+                    .padding(.horizontal, metrics.horizontalPadding)
+                    .padding(.vertical, metrics.verticalPadding)
+            }
+            .frame(height: QAEngagementBarLayoutPolicy.contentHeight)
         }
-        .background(.bar)
+        .background {
+            Rectangle()
+                .fill(.bar)
+                .ignoresSafeArea(edges: .bottom)
+        }
     }
 
-    private var actions: some View {
-        HStack(spacing: 6) {
-            authorAction
-            Spacer(minLength: 0)
-            action(
-                "arrowtriangle.up",
-                label: "赞同",
-                count: content.voteUpCount,
-                selected: content.voteState == .up,
-                action: onVoteUp
-            )
+    private func actions(metrics: QAEngagementBarLayoutMetrics) -> some View {
+        HStack(spacing: 0) {
+            authorAction(maxWidth: metrics.authorWidth)
+            Spacer(minLength: metrics.sectionSpacing)
+            HStack(spacing: metrics.actionSpacing) {
+                action(
+                    .triangle(.up),
+                    label: "赞同",
+                    count: content.voteUpCount,
+                    selected: content.voteState == .up,
+                    metrics: metrics,
+                    action: onVoteUp
+                )
                 .disabled(voteInFlight)
-            action(
-                "arrowtriangle.down",
-                label: "反对",
-                selected: content.voteState == .down,
-                action: onVoteDown
-            )
+                action(
+                    .triangle(.down),
+                    label: "反对",
+                    selected: content.voteState == .down,
+                    metrics: metrics,
+                    action: onVoteDown
+                )
                 .disabled(voteInFlight || content.route.kind == .article)
-            action(
-                content.favoriteState == .favorited ? "star.fill" : "star",
-                label: "收藏",
-                count: content.favoriteCount,
-                selected: content.favoriteState == .favorited,
-                action: onFavorite
-            )
-            action(
-                "bubble.left",
-                label: "评论",
-                count: content.commentCount,
-                selected: false,
-                action: onComments
-            )
+                action(
+                    .system(content.favoriteState == .favorited ? "star.fill" : "star"),
+                    label: "收藏",
+                    count: content.favoriteCount,
+                    selected: content.favoriteState == .favorited,
+                    metrics: metrics,
+                    action: onFavorite
+                )
+                action(
+                    .system("bubble.left"),
+                    label: "评论",
+                    count: content.commentCount,
+                    selected: false,
+                    metrics: metrics,
+                    action: onComments
+                )
+            }
         }
     }
 
-    private var authorAction: some View {
+    private func authorAction(maxWidth: CGFloat) -> some View {
         Button(action: onAuthor) {
             HStack(spacing: 7) {
                 AsyncImage(url: content.author.avatarURL) { image in
@@ -359,31 +373,34 @@ private struct AnswerActionBar: View {
         }
         .buttonStyle(.plain)
         .disabled(content.author.personIntent == nil)
-        .frame(maxWidth: 118, alignment: .leading)
+        .frame(width: maxWidth, alignment: .leading)
         .accessibilityLabel(content.author.displayName)
         .accessibilityHint(content.author.personIntent == nil ? "" : "打开作者主页")
     }
 
     private func action(
-        _ systemName: String,
+        _ icon: QAEngagementIcon,
         label: String,
         count: Int? = nil,
         selected: Bool,
+        metrics: QAEngagementBarLayoutMetrics,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            ZStack(alignment: .topTrailing) {
-                Image(systemName: systemName)
-                    .font(.system(size: 22, weight: selected ? .semibold : .regular))
-                    .frame(width: 32, height: 32)
+            ZStack {
+                engagementIcon(icon, selected: selected, metrics: metrics)
                 if let count {
                     Text(QAEngagementCountFormatter.string(for: count))
                         .font(.caption2.monospacedDigit())
                         .lineLimit(1)
-                        .offset(x: 8, y: -5)
+                        .minimumScaleFactor(0.7)
+                        .frame(width: metrics.badgeMaxWidth)
+                        .padding(.horizontal, 2)
+                        .background(.bar, in: Capsule())
+                        .offset(x: metrics.badgeOffset.width, y: metrics.badgeOffset.height)
                 }
             }
-            .frame(width: 44, height: 44)
+            .frame(width: metrics.actionHitArea, height: metrics.actionHitArea)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -394,6 +411,33 @@ private struct AnswerActionBar: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
+    @ViewBuilder
+    private func engagementIcon(
+        _ icon: QAEngagementIcon,
+        selected: Bool,
+        metrics: QAEngagementBarLayoutMetrics
+    ) -> some View {
+        switch icon {
+        case let .triangle(direction):
+            QAEquilateralTriangle(direction: direction)
+                .stroke(
+                    style: StrokeStyle(
+                        lineWidth: selected
+                            ? metrics.selectedTriangleLineWidth
+                            : metrics.triangleLineWidth,
+                        lineJoin: .round
+                    )
+                )
+                .frame(width: metrics.triangleSide, height: metrics.triangleHeight)
+                .offset(y: metrics.triangleVisualCenterOffset(for: direction))
+                .frame(width: metrics.iconCanvas, height: metrics.iconCanvas)
+        case let .system(systemName):
+            Image(systemName: systemName)
+                .font(.system(size: metrics.systemIconSize, weight: selected ? .semibold : .regular))
+                .frame(width: metrics.iconCanvas, height: metrics.iconCanvas)
+        }
+    }
+
     private func accessibilityValue(count: Int?, selected: Bool) -> String {
         [
             count.map { "\($0)" },
@@ -401,6 +445,87 @@ private struct AnswerActionBar: View {
         ]
         .compactMap { $0 }
         .joined(separator: "，")
+    }
+}
+
+private enum QAEngagementIcon {
+    case triangle(QATriangleDirection)
+    case system(String)
+}
+
+enum QATriangleDirection: Equatable {
+    case up
+    case down
+}
+
+struct QAEquilateralTriangle: Shape {
+    let direction: QATriangleDirection
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        switch direction {
+        case .up:
+            path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        case .down:
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        }
+        path.closeSubpath()
+        return path
+    }
+}
+
+struct QAEngagementBarLayoutMetrics: Equatable {
+    let horizontalPadding: CGFloat
+    let verticalPadding: CGFloat
+    let sectionSpacing: CGFloat
+    let actionSpacing: CGFloat
+    let actionHitArea: CGFloat
+    let authorWidth: CGFloat
+    let iconCanvas: CGFloat
+    let systemIconSize: CGFloat
+    let triangleSide: CGFloat
+    let triangleLineWidth: CGFloat
+    let selectedTriangleLineWidth: CGFloat
+    let badgeMaxWidth: CGFloat
+    let badgeOffset: CGSize
+
+    var triangleHeight: CGFloat { triangleSide * CGFloat(3).squareRoot() / 2 }
+    var actionGroupWidth: CGFloat { actionHitArea * 4 + actionSpacing * 3 }
+    var fixedContentWidth: CGFloat {
+        horizontalPadding * 2 + authorWidth + sectionSpacing + actionGroupWidth
+    }
+
+    func triangleVisualCenterOffset(for direction: QATriangleDirection) -> CGFloat {
+        let centroidCorrection = triangleHeight / 6
+        return direction == .up ? -centroidCorrection : centroidCorrection
+    }
+}
+
+enum QAEngagementBarLayoutPolicy {
+    static let contentHeight: CGFloat = 56
+
+    static func metrics(for containerWidth: CGFloat) -> QAEngagementBarLayoutMetrics {
+        let isWide = containerWidth >= 414
+        let isRegular = containerWidth >= 375
+        return QAEngagementBarLayoutMetrics(
+            horizontalPadding: isWide ? 16 : (isRegular ? 12 : 8),
+            verticalPadding: 6,
+            sectionSpacing: isWide ? 10 : (isRegular ? 8 : 6),
+            actionSpacing: isWide ? 8 : (isRegular ? 6 : 2),
+            actionHitArea: 44,
+            authorWidth: isWide ? 132 : (isRegular ? 112 : 84),
+            iconCanvas: 32,
+            systemIconSize: 22,
+            triangleSide: 25,
+            triangleLineWidth: 1.8,
+            selectedTriangleLineWidth: 2.4,
+            badgeMaxWidth: 38,
+            badgeOffset: CGSize(width: 8, height: -12)
+        )
     }
 }
 

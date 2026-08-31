@@ -28,6 +28,39 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         XCTAssertEqual(QAEngagementCountFormatter.string(for: 100_000_000), "1 亿")
     }
 
+    func testEngagementBarLayoutFitsProMaxAndNarrowScreens() {
+        let proMax = QAEngagementBarLayoutPolicy.metrics(for: 430)
+        XCTAssertEqual(proMax.horizontalPadding, 16)
+        XCTAssertEqual(proMax.authorWidth, 132)
+        XCTAssertEqual(proMax.actionHitArea, 44)
+        XCTAssertLessThanOrEqual(proMax.fixedContentWidth, 430)
+
+        let narrow = QAEngagementBarLayoutPolicy.metrics(for: 320)
+        XCTAssertEqual(narrow.horizontalPadding, 8)
+        XCTAssertEqual(narrow.authorWidth, 84)
+        XCTAssertEqual(narrow.actionHitArea, 44)
+        XCTAssertLessThanOrEqual(narrow.fixedContentWidth, 320)
+    }
+
+    func testEngagementTrianglesAreEquilateralAndOpticallyCentered() {
+        let metrics = QAEngagementBarLayoutPolicy.metrics(for: 430)
+        XCTAssertEqual(
+            metrics.triangleHeight,
+            metrics.triangleSide * CGFloat(3).squareRoot() / 2,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            metrics.triangleVisualCenterOffset(for: .up),
+            -metrics.triangleHeight / 6,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            metrics.triangleVisualCenterOffset(for: .down),
+            metrics.triangleHeight / 6,
+            accuracy: 0.001
+        )
+    }
+
     func testAnswerPagerGestureArbitrationPrioritizesSystemBackAtLeadingEdge() {
         let right = CGPoint(x: 120, y: 10)
         let left = CGPoint(x: -120, y: 10)
