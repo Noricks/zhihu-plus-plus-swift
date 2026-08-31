@@ -263,6 +263,12 @@ private struct NativeMediaPresentation: Identifiable, Hashable {
     let initialIndex: Int
 }
 
+struct NativeCommentSheetPresentation: Identifiable {
+    let id = UUID()
+    let route: CommentThreadRouteDTO
+    let sourceTab: NativeAppTab
+}
+
 @available(iOS 16.0, *)
 struct NativeAppShell: View {
     let hostModel: HostModel
@@ -282,6 +288,7 @@ struct NativeAppShell: View {
     @State private var selectedTab: NativeAppTab
     @State private var selectedHomeChannelID: HomeChannel.ID
     @State private var mediaPresentation: NativeMediaPresentation?
+    @State private var commentPresentation: NativeCommentSheetPresentation?
     @State private var shareURL: URL?
     @State private var pendingShareChoiceURL: URL?
     @State private var showsCopiedLinkConfirmation = false
@@ -377,6 +384,13 @@ struct NativeAppShell: View {
         .fullScreenCover(item: $mediaPresentation) { presentation in
             NativeMediaGallery(urls: presentation.urls, initialIndex: presentation.initialIndex)
         }
+        .sheet(item: $commentPresentation) { presentation in
+            NativeCommentSheetRouteView(
+                route: presentation.route,
+                accountStore: hostModel.accountStore,
+                onPersonNavigate: { handlePersonIntent($0, in: presentation.sourceTab) }
+            )
+        }
         .onChange(of: selectedTab) { _ in
             homeTabDoubleTapGate.cancel()
         }
@@ -400,6 +414,7 @@ struct NativeAppShell: View {
             }
         }
         .onChange(of: account.identity.map { "\($0.id)|\($0.urlToken ?? "")" }) { _ in
+            commentPresentation = nil
             navigation.resetAll()
             recommendationStore.accountDidChange()
             followingStore.accountDidChange()
@@ -604,7 +619,7 @@ struct NativeAppShell: View {
                 onOpenPerson: { navigate(.person($0), in: tab) },
                 onOpenLink: handlePinLink,
                 onOpenComments: {
-                    navigate(.comments(.init(subject: .pin($0))), in: tab)
+                    presentComments(.init(subject: .pin($0)), in: tab)
                 }
             )
         case let .video(route):
@@ -797,7 +812,7 @@ struct NativeAppShell: View {
         case let .answer(route): navigate(.answer(route), in: tab)
         case let .writeAnswer(route): navigate(.writeAnswer(route), in: tab)
         case let .comments(route), let .segmentComments(route):
-            navigate(.comments(route), in: tab)
+            presentComments(route, in: tab)
         case let .images(urls, index):
             guard !urls.isEmpty else { return }
             mediaPresentation = .init(urls: urls, initialIndex: index)
@@ -846,6 +861,10 @@ struct NativeAppShell: View {
 
     private func handlePersonIntent(_ intent: PersonNavigationIntent, in tab: NativeAppTab) {
         navigate(intent.nativeShellRoute, in: tab)
+    }
+
+    private func presentComments(_ route: CommentThreadRouteDTO, in tab: NativeAppTab) {
+        commentPresentation = NativeCommentSheetPresentation(route: route, sourceTab: tab)
     }
 
     private func handleCreationIntent(_ intent: CreationSystemIntent, retry: @escaping () async -> Void) {
@@ -1140,6 +1159,28 @@ private struct NativeCommentNavigationRouteView: View {
     }
 
     var body: some View { CommentNavigationPage(model: model) }
+}
+
+@available(iOS 16.0, *)
+private struct NativeCommentSheetRouteView: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var model: CommentHostModel
+
+    init(route: CommentThreadRouteDTO, accountStore: AccountJSONStore, onPersonNavigate: @escaping (PersonNavigationIntent) -> Void) {
+        _model = StateObject(wrappedValue: CommentHostModel(
+            route: route,
+            accountStore: accountStore,
+            onPersonNavigate: onPersonNavigate
+        ))
+    }
+
+    var body: some View {
+        NavigationStack {
+            CommentNavigationPage(model: model, close: { dismiss() })
+        }
+        .modifier(CommentRootSheetPresentationModifier())
+        .accessibilityIdentifier("comment_root_sheet")
+    }
 }
 
 private struct NativeSharePresentation: Identifiable {

@@ -65,12 +65,19 @@ final class CommentHostModel: ObservableObject, Identifiable {
 @available(iOS 16.0, *)
 struct CommentNavigationPage: View {
     @ObservedObject var model: CommentHostModel
+    let close: (() -> Void)?
+
+    init(model: CommentHostModel, close: (() -> Void)? = nil) {
+        self.model = model
+        self.close = close
+    }
 
     var body: some View {
         CommentThreadContainer(
             store: model.store,
             personModel: model.personModel,
-            personBindingChanged: model.personBindingChanged
+            personBindingChanged: model.personBindingChanged,
+            close: close
         )
         .accessibilityIdentifier("comment_navigation_page")
     }
@@ -81,9 +88,10 @@ private struct CommentThreadContainer: View {
     @ObservedObject var store: CommentSessionStore
     let personModel: PersonHostModel?
     let personBindingChanged: (Bool) -> Void
+    let close: (() -> Void)?
 
     var body: some View {
-        CommentLevelView(store: store, level: .root, close: nil)
+        CommentLevelView(store: store, level: .root, close: close)
             .navigationDestination(isPresented: rootPersonBinding) {
                 if let personModel { PersonNativeView(model: personModel) }
             }
@@ -268,6 +276,34 @@ private struct CommentSheetPresentationModifier: ViewModifier {
     }
 }
 
+enum CommentRootSheetLayout {
+    static let compactFraction: CGFloat = 0.82
+    static let cornerRadius: CGFloat = 24
+
+    static func compactHeight(in availableHeight: CGFloat) -> CGFloat {
+        max(0, availableHeight) * compactFraction
+    }
+}
+
+struct CommentRootSheetPresentationModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 16.4, *) {
+            content
+                .presentationDetents([.fraction(CommentRootSheetLayout.compactFraction), .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(CommentRootSheetLayout.cornerRadius)
+                .presentationBackground(Color(uiColor: .systemBackground))
+        } else if #available(iOS 16, *) {
+            content
+                .presentationDetents([.fraction(CommentRootSheetLayout.compactFraction), .large])
+                .presentationDragIndicator(.visible)
+        } else {
+            content
+        }
+    }
+}
+
 @available(iOS 16.0, *)
 private struct CommentLevelView: View {
     @ObservedObject var store: CommentSessionStore
@@ -309,7 +345,7 @@ private struct CommentLevelView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if let close {
-                ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(placement: .confirmationAction) {
                     Button(action: close) {
                         Image(systemName: "xmark")
                     }
