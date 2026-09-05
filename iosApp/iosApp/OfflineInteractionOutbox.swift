@@ -449,13 +449,55 @@ protocol OfflineInteractionExecuting: Sendable {
     ) async throws -> OfflineInteractionAcknowledgement
 }
 
+/// Keeps an already-downloaded flight pack coherent after the server accepts a mutation.
+/// Implementations must not create new caches for ordinary, previously uncached content.
+protocol OfflineInteractionCacheRefreshing: Sendable {
+    func refreshCachedVote(
+        accountID: String,
+        kind: QAContentKind,
+        contentID: Int64,
+        desiredState: QAVoteState
+    ) async throws
+
+    func refreshCachedCollectionMembership(
+        accountID: String,
+        kind: QAContentKind,
+        contentID: Int64,
+        collectionID: String,
+        isMember: Bool
+    ) async throws
+}
+
+struct DisabledOfflineInteractionCacheRefresher: OfflineInteractionCacheRefreshing {
+    func refreshCachedVote(
+        accountID: String,
+        kind: QAContentKind,
+        contentID: Int64,
+        desiredState: QAVoteState
+    ) async throws {}
+
+    func refreshCachedCollectionMembership(
+        accountID: String,
+        kind: QAContentKind,
+        contentID: Int64,
+        collectionID: String,
+        isMember: Bool
+    ) async throws {}
+}
+
 /// Sends the same methods, paths and payloads as the existing answer, pin and comment repositories.
 /// Every non-GET request is pinned to the account captured when the intent was enqueued.
 actor ZhihuOfflineInteractionExecutor: OfflineInteractionExecuting {
     private let client: ZhihuAPIClient
+    private let cacheRefresher: any OfflineInteractionCacheRefreshing
 
-    init(client: ZhihuAPIClient) {
+    init(
+        client: ZhihuAPIClient,
+        cacheRefresher: any OfflineInteractionCacheRefreshing =
+            DisabledOfflineInteractionCacheRefresher()
+    ) {
         self.client = client
+        self.cacheRefresher = cacheRefresher
     }
 
     func execute(
@@ -493,6 +535,12 @@ actor ZhihuOfflineInteractionExecutor: OfflineInteractionExecuting {
             guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let count = root["voteup_count"] as? Int
             else { throw QuestionAnswerRepositoryError.malformedMutation }
+            try await cacheRefresher.refreshCachedVote(
+                accountID: accountID,
+                kind: kind,
+                contentID: contentID,
+                desiredState: state
+            )
             return .vote(voteUpCount: count)
 
         case let .collectionMembership(kind, contentID, collectionID, isMember):
@@ -508,6 +556,13 @@ actor ZhihuOfflineInteractionExecutor: OfflineInteractionExecuting {
                 additionalHeaders: ["Content-Type": "application/x-www-form-urlencoded"],
                 authentication: .accountRequired,
                 expectedAccountID: accountID
+            )
+            try await cacheRefresher.refreshCachedCollectionMembership(
+                accountID: accountID,
+                kind: kind,
+                contentID: contentID,
+                collectionID: collectionID,
+                isMember: isMember
             )
             return .accepted
 

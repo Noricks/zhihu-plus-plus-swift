@@ -133,6 +133,7 @@ final class HostModel: ObservableObject {
             accountStore: accountStore,
             diagnostics: performanceDiagnostics.client
         )
+        let questionAnswerRepository = URLSessionQuestionAnswerRepository(client: client)
         let outboxURL = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -141,7 +142,10 @@ final class HostModel: ObservableObject {
             .appendingPathComponent("outbox-v1.json", isDirectory: false)
         let interactionOutbox = DurableOfflineInteractionOutbox(
             storage: JSONFileOfflineInteractionOutboxStorage(fileURL: outboxURL),
-            executor: ZhihuOfflineInteractionExecutor(client: client)
+            executor: ZhihuOfflineInteractionExecutor(
+                client: client,
+                cacheRefresher: questionAnswerRepository
+            )
         )
         let offlineInteractions = OfflineInteractionCoordinator(
             outbox: interactionOutbox,
@@ -187,7 +191,7 @@ final class HostModel: ObservableObject {
         dailyRepository = URLSessionDailyRepository(client: client)
         pinRepository = URLSessionPinRepository(client: client)
         creationRepository = URLSessionCreationRepository(client: client)
-        questionAnswerRepository = URLSessionQuestionAnswerRepository(client: client)
+        self.questionAnswerRepository = questionAnswerRepository
         videoRepository = URLSessionNativeVideoRepository(client: client)
         answerOpenedHistory = UserDefaultsAnswerOpenedHistory(defaults: defaults)
         self.systemSettings = systemSettings

@@ -1577,6 +1577,77 @@ final class OfflineAPIResponseCacheTests: XCTestCase {
         XCTAssertEqual(recorder.requests.count, networkRequestCount)
     }
 
+    func testSuccessfulVoteRefreshesAnExistingOfflineAnswerCache() async throws {
+        let recorder = QARequestRecorder()
+        let mode = QAURLProtocolMode(.response(200, QAFixtures.answer, [:]))
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            return try mode.response()
+        }
+        let cache = QAResponseCacheSpy()
+        let client = makeClient(
+            accountStore: QAMultipleAccountStore.singleAccount(),
+            responseCache: cache
+        )
+        let repository = URLSessionQuestionAnswerRepository(client: client)
+        let route = AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7)
+        _ = try await repository.fetchAnswer(route, cachePolicy: .offlinePackWarm)
+
+        let refreshedJSON = String(decoding: QAFixtures.answer, as: UTF8.self)
+            .replacingOccurrences(of: #""voteup_count":100"#, with: #""voteup_count":101"#)
+            .replacingOccurrences(of: #""vote":"UP""#, with: #""vote":"DOWN""#)
+        mode.set(.response(200, Data(refreshedJSON.utf8), [:]))
+
+        try await repository.refreshCachedVote(
+            accountID: "alice",
+            kind: .answer,
+            contentID: 42,
+            desiredState: .down
+        )
+        let requestCountAfterRefresh = recorder.requests.count
+        let cached = try await repository.fetchAnswer(route, cachePolicy: .cacheOnly)
+
+        XCTAssertEqual(cached.voteState, .down)
+        XCTAssertEqual(cached.voteUpCount, 101)
+        XCTAssertEqual(requestCountAfterRefresh, 2)
+        XCTAssertEqual(recorder.requests.count, requestCountAfterRefresh)
+    }
+
+    func testCacheRefreshSkipsUncachedContentAndPinsEvenCacheOnlyReadsToAccount() async throws {
+        let recorder = QARequestRecorder()
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (200, QAFixtures.answer, [:])
+        }
+        let cache = QAResponseCacheSpy()
+        let client = makeClient(
+            accountStore: QAMultipleAccountStore.singleAccount(),
+            responseCache: cache
+        )
+        let repository = URLSessionQuestionAnswerRepository(client: client)
+
+        try await repository.refreshCachedVote(
+            accountID: "alice",
+            kind: .answer,
+            contentID: 42,
+            desiredState: .up
+        )
+        XCTAssertTrue(recorder.requests.isEmpty)
+
+        do {
+            try await repository.refreshCachedVote(
+                accountID: "bob",
+                kind: .answer,
+                contentID: 42,
+                desiredState: .up
+            )
+            XCTFail("Expected accountChanged")
+        } catch {
+            XCTAssertEqual(error as? ZhihuAPIError, .accountChanged)
+        }
+        XCTAssertTrue(recorder.requests.isEmpty)
+    }
+
     func testMalformedSuccessfulResponseDoesNotOverwriteValidatedCache() async throws {
         let mode = QAURLProtocolMode(.response(200, QAFixtures.answer, [:]))
         QAURLProtocol.setHandler { _ in try mode.response() }

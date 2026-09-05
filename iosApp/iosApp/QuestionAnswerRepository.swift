@@ -282,6 +282,18 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
         _ route: AnswerRouteDTO,
         cachePolicy: ZhihuAPICachePolicy
     ) async throws -> AnswerDTO {
+        try await fetchAnswer(
+            route,
+            cachePolicy: cachePolicy,
+            expectedAccountID: nil
+        )
+    }
+
+    private func fetchAnswer(
+        _ route: AnswerRouteDTO,
+        cachePolicy: ZhihuAPICachePolicy,
+        expectedAccountID: String?
+    ) async throws -> AnswerDTO {
         let path = route.kind == .answer
             ? "/api/v4/answers/\(route.contentID)"
             : "/api/v4/articles/\(route.contentID)"
@@ -292,7 +304,8 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
             cachePolicy: cachePolicy,
             cacheValidation: { data in
                 try Self.validateAnswerCacheData(data, route: route)
-            }
+            },
+            expectedAccountID: expectedAccountID
         )
         return try Self.decodeAnswer(data, route: route)
     }
@@ -333,6 +346,18 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
         route: AnswerRouteDTO,
         cachePolicy: ZhihuAPICachePolicy
     ) async throws -> QACollectionsResult {
+        try await fetchCollections(
+            route: route,
+            cachePolicy: cachePolicy,
+            expectedAccountID: nil
+        )
+    }
+
+    private func fetchCollections(
+        route: AnswerRouteDTO,
+        cachePolicy: ZhihuAPICachePolicy,
+        expectedAccountID: String?
+    ) async throws -> QACollectionsResult {
         let type = route.kind.rawValue
         let url = try apiEndpoint(
             host: "api.zhihu.com",
@@ -345,7 +370,8 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
             cachePolicy: cachePolicy,
             cacheValidation: { data in
                 try Self.validateCollectionsCacheData(data)
-            }
+            },
+            expectedAccountID: expectedAccountID
         )
         return try Self.decodeCollections(data)
     }
@@ -545,6 +571,97 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
               url.path == requiredPrefix
         else { throw QuestionAnswerRepositoryError.untrustedContinuation }
         return url
+    }
+}
+
+enum OfflineInteractionCacheRefreshError: LocalizedError, Equatable, Sendable {
+    case serverStateNotConfirmed
+
+    var errorDescription: String? {
+        "知乎暂未确认刚才的操作，将稍后重试"
+    }
+}
+
+extension URLSessionQuestionAnswerRepository: OfflineInteractionCacheRefreshing {
+    func refreshCachedVote(
+        accountID: String,
+        kind: QAContentKind,
+        contentID: Int64,
+        desiredState: QAVoteState
+    ) async throws {
+        let route = AnswerRouteDTO(contentID: contentID, kind: kind)
+        guard try await hasCachedAnswer(route, accountID: accountID) else { return }
+        let refreshed = try await fetchAnswer(
+            route,
+            cachePolicy: .offlinePackWarm,
+            expectedAccountID: accountID
+        )
+        guard refreshed.voteState == desiredState else {
+            throw OfflineInteractionCacheRefreshError.serverStateNotConfirmed
+        }
+    }
+
+    func refreshCachedCollectionMembership(
+        accountID: String,
+        kind: QAContentKind,
+        contentID: Int64,
+        collectionID: String,
+        isMember: Bool
+    ) async throws {
+        let route = AnswerRouteDTO(contentID: contentID, kind: kind)
+        let hasAnswer = try await hasCachedAnswer(route, accountID: accountID)
+        let hasCollections = try await hasCachedCollections(route, accountID: accountID)
+        guard hasAnswer || hasCollections else { return }
+
+        let refreshedCollections = try await fetchCollections(
+            route: route,
+            cachePolicy: .offlinePackWarm,
+            expectedAccountID: accountID
+        )
+        let targetIsMember = refreshedCollections.items
+            .first(where: { $0.id == collectionID })?
+            .isFavorited ?? false
+        guard targetIsMember == isMember else {
+            throw OfflineInteractionCacheRefreshError.serverStateNotConfirmed
+        }
+
+        _ = try await fetchAnswer(
+            route,
+            cachePolicy: .offlinePackWarm,
+            expectedAccountID: accountID
+        )
+    }
+
+    private func hasCachedAnswer(
+        _ route: AnswerRouteDTO,
+        accountID: String
+    ) async throws -> Bool {
+        do {
+            _ = try await fetchAnswer(
+                route,
+                cachePolicy: .cacheOnly,
+                expectedAccountID: accountID
+            )
+            return true
+        } catch ZhihuAPIError.cachedResponseUnavailable {
+            return false
+        }
+    }
+
+    private func hasCachedCollections(
+        _ route: AnswerRouteDTO,
+        accountID: String
+    ) async throws -> Bool {
+        do {
+            _ = try await fetchCollections(
+                route: route,
+                cachePolicy: .cacheOnly,
+                expectedAccountID: accountID
+            )
+            return true
+        } catch ZhihuAPIError.cachedResponseUnavailable {
+            return false
+        }
     }
 }
 

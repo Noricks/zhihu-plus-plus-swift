@@ -187,7 +187,6 @@ actor ZhihuAPIClient {
             accountSnapshot = try requestAccountSnapshot(authentication: authentication)
             try validateExpectedAccountID(
                 expectedAccountID,
-                method: normalizedMethod,
                 accountSnapshot: accountSnapshot
             )
             let credentials = try credentials(
@@ -256,7 +255,6 @@ actor ZhihuAPIClient {
             try validateAccountSnapshot(accountSnapshot)
             try validateExpectedAccountID(
                 expectedAccountID,
-                method: normalizedMethod,
                 accountSnapshot: accountSnapshot
             )
 
@@ -269,7 +267,6 @@ actor ZhihuAPIClient {
             try validateAccountSnapshot(accountSnapshot)
             try validateExpectedAccountID(
                 expectedAccountID,
-                method: normalizedMethod,
                 accountSnapshot: accountSnapshot
             )
             try persistResponseCookies(
@@ -417,12 +414,9 @@ actor ZhihuAPIClient {
 
     private func validateExpectedAccountID(
         _ expectedAccountID: String?,
-        method: String,
         accountSnapshot: RequestAccountSnapshot
     ) throws {
-        guard method != "GET", method != "HEAD", method != "OPTIONS",
-              let expectedAccountID
-        else { return }
+        guard let expectedAccountID else { return }
         guard let normalizedExpectedAccountID = expectedAccountID.nonBlank,
               accountSnapshot.accountID == normalizedExpectedAccountID
         else {

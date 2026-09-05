@@ -446,6 +446,83 @@ final class OfflineInteractionOutboxTests: XCTestCase {
         XCTAssertEqual(recorder.requests().count, 5)
     }
 
+    func testExecutorRefreshesCachedVoteAndCollectionAfterServerAcceptance() async throws {
+        OfflineInteractionURLProtocol.setHandler { request in
+            if request.url?.path.hasSuffix("/voters") == true {
+                return (200, Data(#"{"voteup_count":12}"#.utf8))
+            }
+            return (200, Data("{}".utf8))
+        }
+        let refresher = RecordingOfflineInteractionCacheRefresher()
+        let executor = ZhihuOfflineInteractionExecutor(
+            client: makeClient(
+                accountStore: OfflineInteractionAccountStore(currentAccountID: "account-a")
+            ),
+            cacheRefresher: refresher
+        )
+
+        _ = try await executor.execute(
+            accountID: "account-a",
+            mutation: .contentVote(kind: .answer, contentID: 1, state: .up)
+        )
+        _ = try await executor.execute(
+            accountID: "account-a",
+            mutation: .collectionMembership(
+                kind: .answer,
+                contentID: 1,
+                collectionID: "collection-1",
+                isMember: true
+            )
+        )
+
+        let calls = await refresher.recordedCalls()
+        XCTAssertEqual(calls, [
+            .vote(
+                accountID: "account-a",
+                kind: .answer,
+                contentID: 1,
+                desiredState: .up
+            ),
+            .collection(
+                accountID: "account-a",
+                kind: .answer,
+                contentID: 1,
+                collectionID: "collection-1",
+                isMember: true
+            ),
+        ])
+    }
+
+    func testCacheRefreshFailureKeepsServerAcceptedMutationPending() async throws {
+        OfflineInteractionURLProtocol.setHandler { _ in
+            (200, Data(#"{"voteup_count":12}"#.utf8))
+        }
+        let refresher = RecordingOfflineInteractionCacheRefresher(shouldFail: true)
+        let executor = ZhihuOfflineInteractionExecutor(
+            client: makeClient(
+                accountStore: OfflineInteractionAccountStore(currentAccountID: "account-a")
+            ),
+            cacheRefresher: refresher
+        )
+        let outbox = DurableOfflineInteractionOutbox(
+            storage: LockedOfflineInteractionStorage(),
+            executor: executor
+        )
+        _ = try await outbox.enqueue(
+            accountID: "account-a",
+            mutation: .contentVote(kind: .answer, contentID: 1, state: .up)
+        )
+
+        let report = try await outbox.flush(accountID: "account-a")
+        let pending = try await outbox.pending(accountID: "account-a")
+
+        XCTAssertTrue(report.delivered.isEmpty)
+        XCTAssertEqual(report.remainingCount, 1)
+        XCTAssertEqual(pending.count, 1)
+        XCTAssertEqual(pending.first?.lastFailure, .unknown)
+        XCTAssertTrue(pending.first?.isBlocked == false)
+    }
+
     @MainActor
     func testCoordinatorPublishesOptimisticOverlayAndRetriesOnNetworkRecovery() async throws {
         let executor = SequencedOfflineInteractionExecutor()
@@ -643,6 +720,67 @@ private final class LockedOfflineInteractionStorage:
 private struct OfflineInteractionExecutorCall: Equatable, Sendable {
     let accountID: String
     let mutation: OfflineInteractionMutation
+}
+
+private enum OfflineInteractionCacheRefreshCall: Equatable, Sendable {
+    case vote(
+        accountID: String,
+        kind: QAContentKind,
+        contentID: Int64,
+        desiredState: QAVoteState
+    )
+    case collection(
+        accountID: String,
+        kind: QAContentKind,
+        contentID: Int64,
+        collectionID: String,
+        isMember: Bool
+    )
+}
+
+private actor RecordingOfflineInteractionCacheRefresher:
+    OfflineInteractionCacheRefreshing
+{
+    private let shouldFail: Bool
+    private var calls: [OfflineInteractionCacheRefreshCall] = []
+
+    init(shouldFail: Bool = false) {
+        self.shouldFail = shouldFail
+    }
+
+    func refreshCachedVote(
+        accountID: String,
+        kind: QAContentKind,
+        contentID: Int64,
+        desiredState: QAVoteState
+    ) async throws {
+        calls.append(.vote(
+            accountID: accountID,
+            kind: kind,
+            contentID: contentID,
+            desiredState: desiredState
+        ))
+        if shouldFail { throw OfflineInteractionTestError.cacheRefreshFailed }
+    }
+
+    func refreshCachedCollectionMembership(
+        accountID: String,
+        kind: QAContentKind,
+        contentID: Int64,
+        collectionID: String,
+        isMember: Bool
+    ) async throws {
+        calls.append(.collection(
+            accountID: accountID,
+            kind: kind,
+            contentID: contentID,
+            collectionID: collectionID,
+            isMember: isMember
+        ))
+        if shouldFail { throw OfflineInteractionTestError.cacheRefreshFailed }
+    }
+
+    func recordedCalls() -> [OfflineInteractionCacheRefreshCall] { calls }
 }
 
 private actor SequencedOfflineInteractionExecutor: OfflineInteractionExecuting {
@@ -913,4 +1051,5 @@ private final class OfflineInteractionURLProtocol: URLProtocol, @unchecked Senda
 
 private enum OfflineInteractionTestError: Error {
     case timedOut
+    case cacheRefreshFailed
 }
