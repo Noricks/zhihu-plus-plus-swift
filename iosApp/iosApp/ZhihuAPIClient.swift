@@ -526,7 +526,7 @@ actor ZhihuAPIClient {
     private func recordFailure(
         _ error: Error,
         startedAt: TimeInterval,
-        endpoint: PerformanceDiagnosticEndpoint,
+        endpoint: PerformanceDiagnosticEndpoint?,
         statusCode: Int?
     ) {
         diagnostics.record(.init(
