@@ -855,8 +855,9 @@ private final class OfflineInteractionRequestRecorder: @unchecked Sendable {
     private var recorded: [URLRequest] = []
 
     func record(_ request: URLRequest) {
+        let captured = URLRequestBodyCapture.capture(request)
         lock.lock()
-        recorded.append(request)
+        recorded.append(captured)
         lock.unlock()
     }
 
