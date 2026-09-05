@@ -50,8 +50,11 @@ struct HomeChannelsNativeView: View {
     @State private var wasOperationallyVisible = false
     @State private var refreshStatusNow = Date()
 
+    let recommendationSource: HomeRecommendationSource
+    let isSignedIn: Bool
     let isOperationallyVisible: Bool
     let doubleTapRefreshRequest: UInt
+    let onRecommendationSourceChange: (HomeRecommendationSource) -> Void
     let onOpenFeed: (FeedItemRoute) -> Void
     let onOpenPerson: (PersonRoutePayload) -> Void
     let onOpenDaily: (DailyStoryDestination) -> Void
@@ -62,8 +65,11 @@ struct HomeChannelsNativeView: View {
         followingStore: FollowNativeStore,
         hotStore: HotFeedStore,
         dailyStore: DailyNativeStore,
+        recommendationSource: HomeRecommendationSource,
+        isSignedIn: Bool,
         doubleTapRefreshRequest: UInt,
         isOperationallyVisible: Bool,
+        onRecommendationSourceChange: @escaping (HomeRecommendationSource) -> Void,
         onOpenFeed: @escaping (FeedItemRoute) -> Void,
         onOpenPerson: @escaping (PersonRoutePayload) -> Void,
         onOpenDaily: @escaping (DailyStoryDestination) -> Void
@@ -74,8 +80,11 @@ struct HomeChannelsNativeView: View {
         _hotStore = ObservedObject(wrappedValue: hotStore)
         _dailyStore = ObservedObject(wrappedValue: dailyStore)
         _lastSelectedChannelID = State(initialValue: selectedChannelID.wrappedValue)
+        self.recommendationSource = recommendationSource
+        self.isSignedIn = isSignedIn
         self.doubleTapRefreshRequest = doubleTapRefreshRequest
         self.isOperationallyVisible = isOperationallyVisible
+        self.onRecommendationSourceChange = onRecommendationSourceChange
         self.onOpenFeed = onOpenFeed
         self.onOpenPerson = onOpenPerson
         self.onOpenDaily = onOpenDaily
@@ -93,7 +102,10 @@ struct HomeChannelsNativeView: View {
                     now: refreshStatusNow
                 )
             },
-            onPrefetch: prefetchChannel
+            onPrefetch: prefetchChannel,
+            headerAccessory: {
+                recommendationSourceAccessory
+            }
         ) { channel in
             channelContent(channel)
         }
@@ -177,6 +189,25 @@ struct HomeChannelsNativeView: View {
 
     private var selectedChannel: HomeChannel {
         HomeChannel(rawValue: selectedChannelID) ?? .recommendation
+    }
+
+    @ViewBuilder
+    private var recommendationSourceAccessory: some View {
+        if HomeRecommendationSourceTogglePolicy.isVisible(
+            selectedChannel: selectedChannel
+        ) {
+            HomeRecommendationSourceToggle(
+                source: recommendationSource,
+                isSignedIn: isSignedIn,
+                onSwitch: switchRecommendationSource
+            )
+        }
+    }
+
+    private func switchRecommendationSource(to source: HomeRecommendationSource) {
+        guard source != recommendationSource else { return }
+        scrollToTopRequests[.recommendation, default: 0] &+= 1
+        onRecommendationSourceChange(source)
     }
 
     private func collapseProgressBinding(for channel: HomeChannel) -> Binding<CGFloat> {
@@ -421,6 +452,61 @@ struct HomeChannelsNativeView: View {
         }
     }
 
+}
+
+private struct HomeRecommendationSourceToggle: View {
+    let source: HomeRecommendationSource
+    let isSignedIn: Bool
+    let onSwitch: (HomeRecommendationSource) -> Void
+
+    @Environment(\.nativeHapticFeedback) private var hapticFeedback
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let presentation = HomeRecommendationSourceTogglePolicy.presentation(for: source)
+        let canSwitch = HomeRecommendationSourceTogglePolicy.canSwitch(
+            from: source,
+            isSignedIn: isSignedIn
+        )
+
+        Button {
+            guard canSwitch else { return }
+            hapticFeedback(.selection)
+            if reduceMotion {
+                onSwitch(HomeRecommendationSourceTogglePolicy.next(after: source))
+            } else {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    onSwitch(HomeRecommendationSourceTogglePolicy.next(after: source))
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(presentation.visibleLabel)
+                    .font(.system(size: 13, weight: .semibold))
+
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .frame(minWidth: 60, minHeight: 44)
+        .contentShape(Rectangle())
+        .disabled(!canSwitch)
+        .opacity(canSwitch ? 1 : 0.55)
+        .accessibilityLabel(HomeRecommendationSourceTogglePresentation.accessibilityLabel)
+        .accessibilityValue(presentation.accessibilityValue)
+        .accessibilityHint(HomeRecommendationSourceTogglePolicy.accessibilityHint(
+            for: source,
+            isSignedIn: isSignedIn
+        ))
+        .accessibilityIdentifier(
+            HomeRecommendationSourceTogglePresentation.accessibilityIdentifier
+        )
+    }
 }
 
 enum HomeChannelRefreshStatusText {

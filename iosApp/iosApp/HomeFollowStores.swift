@@ -529,10 +529,13 @@ final class HomeFeedNativeStore: ObservableObject {
     }
 
     func recommendationSourceDidChange() async {
+        guard !Task.isCancelled else { return }
         let source = configuration().source
         guard loadedSource != source || isLoading else { return }
         resetForCacheContextChange()
-        if await restoreCachedSnapshotForCurrentContext(), !needsRefreshAfterIdle() {
+        let restoredCachedSnapshot = await restoreCachedSnapshotForCurrentContext()
+        guard !Task.isCancelled, configuration().source == source else { return }
+        if restoredCachedSnapshot, !needsRefreshAfterIdle() {
             scheduleFirstContinuationPrefetch()
             return
         }

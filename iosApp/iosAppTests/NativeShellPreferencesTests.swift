@@ -211,6 +211,97 @@ final class NativeShellPreferencesTests: XCTestCase {
         XCTAssertEqual(restored.homeRefreshTargetItemCount, 20)
     }
 
+    func testRecommendationSourceToggleCyclesAndDescribesItsDestination() {
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePolicy.next(after: .app),
+            .web
+        )
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePolicy.next(after: .web),
+            .app
+        )
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePolicy.next(
+                after: HomeRecommendationSourceTogglePolicy.next(after: .app)
+            ),
+            .app
+        )
+
+        let app = HomeRecommendationSourceTogglePolicy.presentation(for: .app)
+        XCTAssertEqual(app.visibleLabel, "App")
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePresentation.accessibilityLabel,
+            "推荐来源"
+        )
+        XCTAssertEqual(app.accessibilityValue, "App 接口")
+        XCTAssertEqual(app.accessibilityHint, "轻点切换到 Web 接口")
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePresentation.accessibilityIdentifier,
+            "home_recommendation_source_toggle"
+        )
+
+        let web = HomeRecommendationSourceTogglePolicy.presentation(for: .web)
+        XCTAssertEqual(web.visibleLabel, "Web")
+        XCTAssertEqual(web.accessibilityValue, "Web 接口")
+        XCTAssertEqual(web.accessibilityHint, "轻点切换到 App 接口")
+    }
+
+    func testRecommendationSourceToggleOnlyAppearsOnRecommendationsAndRequiresLoginForWeb() {
+        XCTAssertTrue(HomeRecommendationSourceTogglePolicy.isVisible(
+            selectedChannel: .recommendation
+        ))
+        XCTAssertFalse(HomeRecommendationSourceTogglePolicy.isVisible(
+            selectedChannel: .following
+        ))
+        XCTAssertFalse(HomeRecommendationSourceTogglePolicy.isVisible(
+            selectedChannel: .hot
+        ))
+        XCTAssertFalse(HomeRecommendationSourceTogglePolicy.isVisible(
+            selectedChannel: .daily
+        ))
+
+        XCTAssertTrue(HomeRecommendationSourceTogglePolicy.canSwitch(
+            from: .app,
+            isSignedIn: true
+        ))
+        XCTAssertFalse(HomeRecommendationSourceTogglePolicy.canSwitch(
+            from: .app,
+            isSignedIn: false
+        ))
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePolicy.accessibilityHint(
+                for: .app,
+                isSignedIn: false
+            ),
+            "登录后可切换到 Web 接口"
+        )
+        XCTAssertTrue(HomeRecommendationSourceTogglePolicy.canSwitch(
+            from: .web,
+            isSignedIn: false
+        ))
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePolicy.permittedSource(
+                .web,
+                isSignedIn: false
+            ),
+            .app
+        )
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePolicy.permittedSource(
+                .web,
+                isSignedIn: true
+            ),
+            .web
+        )
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePolicy.permittedSource(
+                .app,
+                isSignedIn: false
+            ),
+            .app
+        )
+    }
+
     func testHapticPreferencesPersistUserOverridesAndRejectUnknownStrength() {
         let defaults = makeDefaults()
         let preferences = NativeShellPreferences(defaults: defaults)

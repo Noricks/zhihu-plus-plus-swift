@@ -2,7 +2,11 @@ import SwiftUI
 import UIKit
 
 /// A top channel selector whose stable channel views move as one horizontal page strip.
-struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: View>: View {
+struct NativeChannelSwitcher<
+    Channel: Identifiable & Hashable,
+    HeaderAccessory: View,
+    ChannelContent: View
+>: View {
     let channels: [Channel]
     @Binding var selection: Channel.ID
     let isEnabled: Bool
@@ -10,6 +14,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
     private let title: (Channel) -> String
     private let status: (Channel) -> String?
     private let onPrefetch: (Channel) -> Void
+    private let headerAccessory: HeaderAccessory
     private let content: (Channel) -> ChannelContent
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -26,6 +31,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
         title: @escaping (Channel) -> String,
         status: @escaping (Channel) -> String? = { _ in nil },
         onPrefetch: @escaping (Channel) -> Void = { _ in },
+        @ViewBuilder headerAccessory: () -> HeaderAccessory,
         @ViewBuilder content: @escaping (Channel) -> ChannelContent
     ) {
         self.channels = channels
@@ -34,6 +40,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
         self.title = title
         self.status = status
         self.onPrefetch = onPrefetch
+        self.headerAccessory = headerAccessory()
         self.content = content
     }
 
@@ -77,12 +84,18 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
     }
 
     private var fixedHeader: some View {
-        NativeChannelSelector(
-            channels: channels,
-            selection: $selection,
-            title: title,
-            status: status
-        )
+        ZStack(alignment: .trailing) {
+            NativeChannelSelector(
+                channels: channels,
+                selection: $selection,
+                title: title,
+                status: status
+            )
+
+            headerAccessory
+                .padding(.trailing, 8)
+                .nativeChannelSwipeExclusion()
+        }
         .background(NativeZhihuVisualStyle.backgroundColor)
         .frame(
             height: NativeHomeHeaderLayoutPolicy.expandedHeaderHeight,

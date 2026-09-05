@@ -297,6 +297,7 @@ struct NativeAppShell: View {
     @State private var searchRootRoute = SearchRouteDTO()
     @State private var searchFocusRequestToken: UInt = 0
     @State private var clipboardInspectionArmed = false
+    @State private var recommendationSourceChangeTask: Task<Void, Never>?
 
     init(hostModel: HostModel, isAppUnlocked: Bool) {
         self.hostModel = hostModel
@@ -421,6 +422,7 @@ struct NativeAppShell: View {
             }
         }
         .onChange(of: account.identity.map { "\($0.id)|\($0.urlToken ?? "")" }) { _ in
+            fallBackToGuestRecommendationSourceIfNeeded()
             commentPresentation = nil
             navigation.resetAll()
             recommendationStore.accountDidChange()
@@ -444,11 +446,12 @@ struct NativeAppShell: View {
                 }
             }
         }
-        .onChange(of: preferences.homeRecommendationSource) { _ in
-            Task { await recommendationStore.recommendationSourceDidChange() }
+        .onChange(of: preferences.homeRecommendationSource) { source in
+            synchronizeRecommendationSource(source)
         }
         .task {
             if case .loading = account.state { account.reloadFromKeychain() }
+            fallBackToGuestRecommendationSourceIfNeeded()
             if account.isSignedIn { await notifications.refreshUnreadCounts() }
             SystemNavigationRequestCenter.shared.installHandler(handleSystemNavigation)
             clipboardInspectionArmed = true
@@ -541,10 +544,15 @@ struct NativeAppShell: View {
                 followingStore: followingStore,
                 hotStore: hotStore,
                 dailyStore: dailyStore,
+                recommendationSource: preferences.homeRecommendationSource,
+                isSignedIn: account.isSignedIn,
                 doubleTapRefreshRequest: homeDoubleTapRefreshRequest,
                 isOperationallyVisible: isAppUnlocked
                     && selectedTab == .home
                     && navigation.isAtRoot(in: .home),
+                onRecommendationSourceChange: {
+                    preferences.setHomeRecommendationSource($0)
+                },
                 onOpenFeed: openFeed,
                 onOpenPerson: { navigate(.person($0)) },
                 onOpenDaily: { handleDailyDestination($0, in: .home) }
@@ -583,6 +591,29 @@ struct NativeAppShell: View {
             )
             .id(searchRootRoute)
         }
+    }
+
+    private func synchronizeRecommendationSource(_ requestedSource: HomeRecommendationSource) {
+        recommendationSourceChangeTask?.cancel()
+        let source = HomeRecommendationSourceTogglePolicy.permittedSource(
+            requestedSource,
+            isSignedIn: account.isSignedIn
+        )
+        guard source == requestedSource else {
+            preferences.setHomeRecommendationSource(source)
+            return
+        }
+
+        recommendationSourceChangeTask = Task { @MainActor in
+            await recommendationStore.recommendationSourceDidChange()
+        }
+    }
+
+    private func fallBackToGuestRecommendationSourceIfNeeded() {
+        guard !account.isSignedIn,
+              preferences.homeRecommendationSource == .web
+        else { return }
+        preferences.setHomeRecommendationSource(.app)
     }
 
     @ViewBuilder

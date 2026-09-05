@@ -520,6 +520,20 @@ final class HomeFollowStoreTests: XCTestCase {
         await store.recommendationSourceDidChange()
         XCTAssertEqual(store.items, [feedItem(2)])
 
+        configuration = HomeRecommendationRefreshConfiguration(
+            source: .app,
+            targetItemCount: 20
+        )
+        await store.recommendationSourceDidChange()
+        XCTAssertEqual(store.items, [feedItem(1)])
+
+        configuration = HomeRecommendationRefreshConfiguration(
+            source: .web,
+            targetItemCount: 20
+        )
+        await store.recommendationSourceDidChange()
+        XCTAssertEqual(store.items, [feedItem(2)])
+
         accountID = "account-b"
         store.accountDidChange()
         await store.loadInitialIfNeeded()
@@ -915,6 +929,52 @@ final class HomeFollowStoreTests: XCTestCase {
         XCTAssertEqual(store.items, [feedItem(2)])
         XCTAssertEqual(requestedSources, [.app, .web, .web])
         XCTAssertFalse(requestedURLs.compactMap { $0 }.contains(oldNext))
+    }
+
+    func testLatestRecommendationSourceWinsWhenSwitchesOverlap() async {
+        let repository = HomeRefreshLoopRepositoryStub(
+            pages: [
+                FeedPageDTO(items: [feedItem(1)], nextURL: nil, isEnd: true),
+                FeedPageDTO(items: [feedItem(2)], nextURL: nil, isEnd: true),
+                FeedPageDTO(items: [feedItem(3)], nextURL: nil, isEnd: true),
+            ],
+            delayedRequestNumber: 2
+        )
+        var configuration = HomeRecommendationRefreshConfiguration(
+            source: .app,
+            targetItemCount: 6
+        )
+        let store = HomeFeedNativeStore(
+            repository: repository,
+            configuration: { configuration }
+        )
+        await store.loadInitialIfNeeded()
+
+        configuration = HomeRecommendationRefreshConfiguration(
+            source: .web,
+            targetItemCount: 6
+        )
+        let webSwitch = Task {
+            await store.recommendationSourceDidChange()
+        }
+        await repository.waitUntilDelayedRequestStarts()
+
+        configuration = HomeRecommendationRefreshConfiguration(
+            source: .app,
+            targetItemCount: 6
+        )
+        webSwitch.cancel()
+        let appSwitch = Task {
+            await store.recommendationSourceDidChange()
+        }
+        await appSwitch.value
+        await repository.resumeDelayedRequest()
+        await webSwitch.value
+        let requestedSources = await repository.requestedSources()
+
+        XCTAssertEqual(store.items, [feedItem(3)])
+        XCTAssertEqual(requestedSources, [.app, .web, .app])
+        XCTAssertFalse(store.hasNextPage)
     }
 
     func testHomeRefreshStopsAfterSixRequestsWhenTargetCannotBeReached() async {
