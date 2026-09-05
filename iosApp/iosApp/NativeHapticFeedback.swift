@@ -75,7 +75,7 @@ private enum NativeHapticFeedbackPerformer {
     static func perform(_ event: NativeHapticFeedbackEvent, strength: NativeHapticStrength) {
         let generator = UIImpactFeedbackGenerator(style: impactStyle(for: strength))
         generator.prepare()
-        generator.impactOccurred(intensity: intensity(for: event))
+        generator.impactOccurred(intensity: NativeHapticFeedbackIntensityPolicy.intensity(for: event))
     }
 
     private static func impactStyle(
@@ -87,15 +87,17 @@ private enum NativeHapticFeedbackPerformer {
         case .strong: return .heavy
         }
     }
+}
 
-    private static func intensity(for event: NativeHapticFeedbackEvent) -> CGFloat {
+enum NativeHapticFeedbackIntensityPolicy {
+    static func intensity(for event: NativeHapticFeedbackEvent) -> CGFloat {
         switch event {
         case .selection: return 0.5
         case .commit: return 1
         case .longPress: return 0.8
         case .dismiss: return 0.6
         case .navigationBoundary: return 1
-        case .refreshSucceeded: return 1
+        case .refreshSucceeded: return 0.55
         case .refreshIgnored: return 0.45
         case .strengthPreview: return 0.8
         }

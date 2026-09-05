@@ -4,6 +4,12 @@ import XCTest
 
 @MainActor
 final class CommentStoreTests: XCTestCase {
+    func testRootCommentSheetStartsAtComfortablePartialHeight() {
+        XCTAssertEqual(CommentRootSheetLayout.compactFraction, 0.82, accuracy: 0.001)
+        XCTAssertEqual(CommentRootSheetLayout.compactHeight(in: 1_000), 820, accuracy: 0.001)
+        XCTAssertEqual(CommentRootSheetLayout.compactHeight(in: -1), 0, accuracy: 0.001)
+    }
+
     func testInitialLoadPublishesUniqueRowsAndDefaultScoreSort() async {
         let comment = fixtureComment(id: "root")
         let repository = CommentRepositoryStub(

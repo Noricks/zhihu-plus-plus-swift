@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import UIKit
 import XCTest
 @testable import iosApp
@@ -18,6 +19,86 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         defaults.set("off", forKey: "answerSwitchMode")
 
         XCTAssertEqual(QAReadingPreferences(defaults: defaults), baseline)
+    }
+
+    func testEngagementCountsStayCompactWithoutHidingSmallCounts() {
+        XCTAssertEqual(QAEngagementCountFormatter.string(for: -1), "0")
+        XCTAssertEqual(QAEngagementCountFormatter.string(for: 7_842), "7842")
+        XCTAssertEqual(QAEngagementCountFormatter.string(for: 10_000), "1 万")
+        XCTAssertEqual(QAEngagementCountFormatter.string(for: 23_499), "2.3 万")
+        XCTAssertEqual(QAEngagementCountFormatter.string(for: 100_000_000), "1 亿")
+    }
+
+    func testEngagementBarLayoutFitsProMaxAndNarrowScreens() {
+        let proMax = QAEngagementBarLayoutPolicy.metrics(for: 430)
+        XCTAssertEqual(proMax.horizontalPadding, 16)
+        XCTAssertEqual(proMax.authorWidth, 132)
+        XCTAssertEqual(proMax.actionHitArea, 44)
+        XCTAssertLessThanOrEqual(proMax.fixedContentWidth, 430)
+
+        let narrow = QAEngagementBarLayoutPolicy.metrics(for: 320)
+        XCTAssertEqual(narrow.horizontalPadding, 8)
+        XCTAssertEqual(narrow.authorWidth, 84)
+        XCTAssertEqual(narrow.actionHitArea, 44)
+        XCTAssertLessThanOrEqual(narrow.fixedContentWidth, 320)
+    }
+
+    func testBottomBarBackgroundExtendsOnlyThroughContainerBottomSafeArea() {
+        XCTAssertEqual(
+            NativeFullBleedBottomBarLayoutPolicy.backgroundSafeAreaRegions,
+            .container
+        )
+        XCTAssertEqual(NativeFullBleedBottomBarLayoutPolicy.backgroundEdges, .bottom)
+        XCTAssertFalse(NativeFullBleedBottomBarLayoutPolicy.backgroundEdges.contains(.top))
+        XCTAssertFalse(NativeFullBleedBottomBarLayoutPolicy.backgroundEdges.contains(.horizontal))
+    }
+
+    func testAnswerBarUsesHomeIndicatorSafeAreaWithoutCoveringIt() {
+        XCTAssertEqual(QAEngagementBarLayoutPolicy.contentHeight, 52)
+        XCTAssertEqual(QAEngagementBarLayoutPolicy.safeAreaOverlap(for: 0), 0)
+        XCTAssertEqual(QAEngagementBarLayoutPolicy.safeAreaOverlap(for: 20), 2)
+        XCTAssertEqual(QAEngagementBarLayoutPolicy.safeAreaOverlap(for: 34), 16)
+        XCTAssertEqual(QAEngagementBarLayoutPolicy.safeAreaOverlap(for: 60), 16)
+        XCTAssertGreaterThanOrEqual(
+            34 - QAEngagementBarLayoutPolicy.safeAreaOverlap(for: 34),
+            QAEngagementBarLayoutPolicy.minimumHomeIndicatorClearance
+        )
+    }
+
+    func testPagerOwnedCommentActionKeepsNormalizedExcerpt() {
+        let blocks: [QABodyBlock] = [
+            .paragraph(UUID(), [QAInlineRun(text: "第一段   内容")]),
+            .quote(UUID(), [QAInlineRun(text: "第二段\n内容")]),
+            .image(QAImageDTO(
+                url: URL(string: "https://pic.zhimg.com/example.jpg")!,
+                caption: nil,
+                altText: nil
+            )),
+        ]
+
+        XCTAssertEqual(
+            QACommentShareExcerpt.value(from: blocks),
+            "第一段 内容 第二段 内容"
+        )
+    }
+
+    func testEngagementTrianglesAreEquilateralAndOpticallyCentered() {
+        let metrics = QAEngagementBarLayoutPolicy.metrics(for: 430)
+        XCTAssertEqual(
+            metrics.triangleHeight,
+            metrics.triangleSide * CGFloat(3).squareRoot() / 2,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            metrics.triangleVisualCenterOffset(for: .up),
+            -metrics.triangleHeight / 6,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            metrics.triangleVisualCenterOffset(for: .down),
+            metrics.triangleHeight / 6,
+            accuracy: 0.001
+        )
     }
 
     func testAnswerPagerGestureArbitrationPrioritizesSystemBackAtLeadingEdge() {
@@ -730,13 +811,19 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         let repository = makeRepository()
 
         let answer = try await repository.fetchAnswer(
-            AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7)
+            AnswerRouteDTO(
+                contentID: 42,
+                kind: .answer,
+                questionID: 7,
+                prefersCachedResponse: true
+            )
         )
 
         XCTAssertEqual(answer.title, "原生问题")
         XCTAssertEqual(answer.author.displayName, "作者")
         XCTAssertEqual(answer.voteState, .up)
         XCTAssertEqual(answer.favoriteState, .unknown)
+        XCTAssertTrue(answer.route.prefersCachedResponse)
         XCTAssertEqual(answer.ipLocation, "江苏")
         XCTAssertEqual(answer.endorsements.first?.text, "周刊收录")
         XCTAssertEqual(answer.endorsements.first?.actionURL?.path, "/column/c_1533471233991028736")
@@ -1053,6 +1140,66 @@ final class QuestionAnswerFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testOfflinePagerStopsAtPreparedBoundaryWithoutRequestingAnotherPage() {
+        let repository = StubQuestionAnswerRepository()
+        let route = AnswerRouteDTO(
+            contentID: 42,
+            kind: .answer,
+            questionID: 7,
+            source: AnswerPageSourceDTO(
+                sourceName: "离线阅读",
+                questionID: 7,
+                order: .default,
+                orderedAnswers: [QAFixtures.preview(42)],
+                selectedAnswerID: 42,
+                nextURL: nil
+            ),
+            prefersCachedResponse: true
+        )
+        let pager = AnswerPagerStore(
+            route: route,
+            repository: repository,
+            openedHistory: StubOpenedHistory()
+        )
+
+        XCTAssertEqual(pager.forwardAvailability, .end)
+        XCTAssertTrue(pager.reportForwardBoundaryReached())
+        XCTAssertEqual(pager.boundaryNotice, "没有更多了")
+    }
+
+    @MainActor
+    func testOfflineQuestionAndAnswerUseCacheOnlyWithoutReportingReadHistory() async {
+        let repository = StubQuestionAnswerRepository()
+        repository.requiresCacheOnly = true
+        repository.questionResult = .success(QAFixtures.questionDTO)
+        repository.answerPageResults = [.success(QAFixtures.answerPageDTO)]
+        repository.answerResult = .success(QAFixtures.answerDTO)
+
+        let question = QuestionStore(
+            route: QuestionRouteDTO(questionID: 7, prefersCachedResponse: true),
+            repository: repository
+        )
+        await question.loadIfNeeded()
+
+        let answer = AnswerStore(
+            route: AnswerRouteDTO(
+                contentID: 42,
+                kind: .answer,
+                questionID: 7,
+                prefersCachedResponse: true
+            ),
+            repository: repository
+        )
+        await answer.loadIfNeeded()
+        await answer.loadCollections()
+
+        XCTAssertEqual(question.initialLoad, .loaded)
+        XCTAssertEqual(answer.loadState, .loaded)
+        XCTAssertEqual(answer.collectionsState, .loaded)
+        XCTAssertTrue(repository.readHistoryTokens().isEmpty)
+    }
+
+    @MainActor
     func testPagerCommitsDisplayedAnswerBeforeAsyncPreparation() {
         let repository = StubQuestionAnswerRepository()
         let route = AnswerRouteDTO(
@@ -1080,6 +1227,42 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         XCTAssertEqual(pager.next?.id, 42)
     }
 
+    @MainActor
+    func testPagerPreloadsTwoAnswersAheadWithoutReportingThemAsRead() async {
+        let repository = StubQuestionAnswerRepository()
+        repository.answerResultsByID = Dictionary(uniqueKeysWithValues: [40, 41, 42, 43, 44].map {
+            (Int64($0), .success(QAFixtures.answerDTO(id: Int64($0))))
+        })
+        let pager = AnswerPagerStore(
+            route: AnswerRouteDTO(
+                contentID: 41,
+                kind: .answer,
+                questionID: 7,
+                source: AnswerPageSourceDTO(
+                    questionID: 7,
+                    order: .default,
+                    orderedAnswers: [40, 41, 42, 43, 44].map(QAFixtures.preview),
+                    selectedAnswerID: 41,
+                    nextURL: nil
+                )
+            ),
+            repository: repository,
+            openedHistory: StubOpenedHistory()
+        )
+
+        await pager.prepare()
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(Set(repository.fetchedAnswerIDs()), [40, 41, 42, 43])
+        XCTAssertEqual(repository.readHistoryTokens(), ["41"])
+
+        await pager.didDisplay(answerID: 42)
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(Set(repository.fetchedAnswerIDs()), [40, 41, 42, 43, 44])
+        XCTAssertEqual(repository.readHistoryTokens(), ["41", "42"])
+    }
+
     private func makeRepository(
         accountStore: AccountJSONStore = QAAccountStore()
     ) -> URLSessionQuestionAnswerRepository {
@@ -1090,6 +1273,485 @@ final class QuestionAnswerFeatureTests: XCTestCase {
             session: URLSession(configuration: configuration)
         )
         return URLSessionQuestionAnswerRepository(client: client)
+    }
+}
+
+final class OfflineAPIResponseCacheTests: XCTestCase {
+    override func tearDown() {
+        QAURLProtocol.setHandler(nil)
+        super.tearDown()
+    }
+
+    func testEligibilityIsLimitedToExplicitQAReadEndpoints() {
+        let allowed = [
+            "https://www.zhihu.com/api/v4/questions/7",
+            "https://www.zhihu.com/api/v4/questions/7/feeds?limit=20",
+            "https://www.zhihu.com/api/v4/answers/42?include=content",
+            "https://www.zhihu.com/api/v4/articles/42",
+            "https://api.zhihu.com/collections/contents/answer/42?limit=50",
+            "https://api.zhihu.com/collections/contents/article/42?limit=50",
+        ]
+        for rawURL in allowed {
+            XCTAssertTrue(
+                ZhihuAPIOfflineCacheEligibility.allows(
+                    method: "GET",
+                    url: URL(string: rawURL)!
+                ),
+                rawURL
+            )
+        }
+
+        let rejected = [
+            ("POST", "https://www.zhihu.com/api/v4/answers/42"),
+            ("GET", "http://www.zhihu.com/api/v4/answers/42"),
+            ("GET", "https://attacker.example/api/v4/answers/42"),
+            ("GET", "https://www.zhihu.com/api/v4/answers/42/voters"),
+            ("GET", "https://www.zhihu.com/api/v4/questions/not-a-number"),
+            ("GET", "https://api.zhihu.com/collections/contents/question/7"),
+            ("GET", "https://www.zhihu.com/api/v4/answers/42#fragment"),
+        ]
+        for (method, rawURL) in rejected {
+            XCTAssertFalse(
+                ZhihuAPIOfflineCacheEligibility.allows(
+                    method: method,
+                    url: URL(string: rawURL)!
+                ),
+                "\(method) \(rawURL)"
+            )
+        }
+    }
+
+    func testFileCacheScopesResponsesByAccountAndSupportsObservableRemoval() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "OfflineAPIResponseCacheTests.\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = FileZhihuAPIResponseCache(directory: directory)
+        let url = URL(string: "https://www.zhihu.com/api/v4/answers/42")!
+        let alice = ZhihuAPIResponseCacheRequest(accountID: "alice", url: url)
+        let bob = ZhihuAPIResponseCacheRequest(accountID: "bob", url: url)
+
+        let storedAlice = await cache.store(Data("alice-response".utf8), for: alice)
+        let storedBob = await cache.store(Data("bob-response".utf8), for: bob)
+        XCTAssertTrue(storedAlice)
+        XCTAssertTrue(storedBob)
+        let aliceResponse = await cache.response(for: alice)
+        let bobResponse = await cache.response(for: bob)
+        XCTAssertEqual(aliceResponse, Data("alice-response".utf8))
+        XCTAssertEqual(bobResponse, Data("bob-response".utf8))
+
+        try await cache.removeResponses(forAccountID: "alice")
+
+        let removedAliceResponse = await cache.response(for: alice)
+        let retainedBobResponse = await cache.response(for: bob)
+        XCTAssertNil(removedAliceResponse)
+        XCTAssertEqual(retainedBobResponse, Data("bob-response".utf8))
+    }
+
+    func testFileCacheExpiresOldResponsesAndEnforcesEntryLimit() async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "OfflineAPIResponseCacheTests.\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clock = QACacheClock(now: Date())
+        let cache = FileZhihuAPIResponseCache(
+            directory: directory,
+            maximumAge: 60,
+            maximumEntryCount: 2,
+            maximumByteCount: 1_024,
+            now: { clock.current() }
+        )
+        let requests = (1...3).map {
+            ZhihuAPIResponseCacheRequest(
+                accountID: "alice",
+                url: URL(string: "https://www.zhihu.com/api/v4/answers/\($0)")!
+            )
+        }
+        for request in requests {
+            let stored = await cache.store(Data("response".utf8), for: request)
+            XCTAssertTrue(stored)
+        }
+
+        var retainedCount = 0
+        for request in requests {
+            if await cache.response(for: request) != nil { retainedCount += 1 }
+        }
+        XCTAssertEqual(retainedCount, 2)
+
+        clock.advance(by: 120)
+        for request in requests {
+            let response = await cache.response(for: request)
+            XCTAssertNil(response)
+        }
+    }
+
+    func testOfflineFallbackStoresNetworkResponseAndCacheFirstSkipsNetwork() async throws {
+        let recorder = QARequestRecorder()
+        let mode = QAURLProtocolMode(.response(200, Data("network".utf8), [:]))
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            return try mode.response()
+        }
+        let cache = QAResponseCacheSpy()
+        let accountStore = QAMultipleAccountStore.singleAccount()
+        let client = makeClient(accountStore: accountStore, responseCache: cache)
+        let url = URL(string: "https://www.zhihu.com/api/v4/answers/42")!
+
+        let network = try await client.data(
+            for: url,
+            authentication: .accountRequired,
+            cachePolicy: .offlineFallback
+        )
+        XCTAssertEqual(network, Data("network".utf8))
+
+        mode.set(.failure(.notConnectedToInternet))
+        let fallback = try await client.data(
+            for: url,
+            authentication: .accountRequired,
+            cachePolicy: .offlineFallback
+        )
+        XCTAssertEqual(fallback, Data("network".utf8))
+        XCTAssertEqual(recorder.requests.count, 2)
+
+        let cacheFirst = try await client.data(
+            for: url,
+            authentication: .accountRequired,
+            cachePolicy: .cacheFirst
+        )
+        XCTAssertEqual(cacheFirst, Data("network".utf8))
+        XCTAssertEqual(recorder.requests.count, 2)
+    }
+
+    func testCacheOnlyMissFailsWithoutStartingNetworkRequest() async {
+        let recorder = QARequestRecorder()
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (200, Data("unexpected-network".utf8), [:])
+        }
+        let cache = QAResponseCacheSpy()
+        let client = makeClient(
+            accountStore: QAMultipleAccountStore.singleAccount(),
+            responseCache: cache
+        )
+
+        do {
+            _ = try await client.data(
+                for: URL(string: "https://www.zhihu.com/api/v4/answers/42")!,
+                authentication: .accountRequired,
+                cachePolicy: .cacheOnly
+            )
+            XCTFail("Expected an unavailable cached response")
+        } catch {
+            XCTAssertEqual(error as? ZhihuAPIError, .cachedResponseUnavailable)
+        }
+
+        XCTAssertTrue(recorder.requests.isEmpty)
+        let cacheReads = await cache.readRequests()
+        XCTAssertEqual(cacheReads.count, 1)
+    }
+
+    func testOfflineFallbackDoesNotMaskHTTPFailure() async throws {
+        let cache = QAResponseCacheSpy()
+        let accountStore = QAMultipleAccountStore.singleAccount()
+        let url = URL(string: "https://www.zhihu.com/api/v4/answers/42")!
+        await cache.prime(
+            Data("cached".utf8),
+            for: ZhihuAPIResponseCacheRequest(accountID: "alice", url: url)
+        )
+        QAURLProtocol.setHandler { _ in (503, Data(), [:]) }
+        let client = makeClient(accountStore: accountStore, responseCache: cache)
+
+        do {
+            _ = try await client.data(
+                for: url,
+                authentication: .accountRequired,
+                cachePolicy: .offlineFallback
+            )
+            XCTFail("Expected HTTP failure")
+        } catch {
+            XCTAssertEqual(error as? ZhihuAPIError, .httpStatus(503))
+        }
+        let cacheReads = await cache.readRequests()
+        XCTAssertTrue(cacheReads.isEmpty)
+    }
+
+    func testOfflinePackWarmRequiresSuccessfulDiskWrite() async {
+        QAURLProtocol.setHandler { _ in (200, Data("network".utf8), [:]) }
+        let cache = QAResponseCacheSpy(storesSuccessfully: false)
+        let client = makeClient(
+            accountStore: QAMultipleAccountStore.singleAccount(),
+            responseCache: cache
+        )
+
+        do {
+            _ = try await client.data(
+                for: URL(string: "https://www.zhihu.com/api/v4/answers/42")!,
+                authentication: .accountRequired,
+                cachePolicy: .offlinePackWarm
+            )
+            XCTFail("Expected cache write failure")
+        } catch {
+            XCTAssertEqual(error as? ZhihuAPIError, .cacheWriteFailed)
+        }
+        let storeRequests = await cache.storedRequests()
+        XCTAssertEqual(storeRequests.count, 1)
+    }
+
+    func testOfflinePackWarmDoesNotReuseExistingCacheWhenNetworkIsUnavailable() async {
+        let cache = QAResponseCacheSpy()
+        let url = URL(string: "https://www.zhihu.com/api/v4/answers/42")!
+        await cache.prime(
+            Data("old-cache".utf8),
+            for: ZhihuAPIResponseCacheRequest(accountID: "alice", url: url)
+        )
+        QAURLProtocol.setHandler { _ in throw URLError(.notConnectedToInternet) }
+        let client = makeClient(
+            accountStore: QAMultipleAccountStore.singleAccount(),
+            responseCache: cache
+        )
+
+        do {
+            _ = try await client.data(
+                for: url,
+                authentication: .accountRequired,
+                cachePolicy: .offlinePackWarm
+            )
+            XCTFail("Expected fresh warm-up to require the network")
+        } catch {
+            XCTAssertTrue(error.isNativeConnectivityFailure)
+        }
+        let cacheReads = await cache.readRequests()
+        XCTAssertTrue(cacheReads.isEmpty)
+    }
+
+    func testQuestionRepositoryOptsAllQAReadsIntoAccountScopedCache() async throws {
+        let recorder = QARequestRecorder()
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            switch request.url?.path {
+            case "/api/v4/questions/7":
+                return (200, QAFixtures.question, [:])
+            case "/api/v4/questions/7/feeds":
+                return (200, QAFixtures.answerPage(next: nil), [:])
+            case "/api/v4/answers/42":
+                return (200, QAFixtures.answer, [:])
+            case "/collections/contents/answer/42":
+                return (200, QAFixtures.collections, [:])
+            default:
+                throw QAStubError.failed
+            }
+        }
+        let cache = QAResponseCacheSpy()
+        let client = makeClient(
+            accountStore: QAMultipleAccountStore.singleAccount(),
+            responseCache: cache
+        )
+        let repository: QuestionAnswerRepository = URLSessionQuestionAnswerRepository(client: client)
+        let answerRoute = AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7)
+
+        _ = try await repository.fetchQuestion(QuestionRouteDTO(questionID: 7))
+        _ = try await repository.fetchQuestionAnswers(
+            questionID: 7,
+            sort: .default,
+            after: nil
+        )
+        _ = try await repository.fetchAnswer(answerRoute)
+        _ = try await repository.fetchCollections(route: answerRoute)
+
+        let storedRequests = await cache.storedRequests()
+        XCTAssertEqual(Set(storedRequests.map(\.accountID)), ["alice"])
+        XCTAssertEqual(
+            Set(storedRequests.map(\.url.path)),
+            [
+                "/api/v4/questions/7",
+                "/api/v4/questions/7/feeds",
+                "/api/v4/answers/42",
+                "/collections/contents/answer/42",
+            ]
+        )
+
+        let networkRequestCount = recorder.requests.count
+        _ = try await repository.fetchAnswer(answerRoute, cachePolicy: .cacheFirst)
+        XCTAssertEqual(recorder.requests.count, networkRequestCount)
+    }
+
+    func testSuccessfulVoteRefreshesAnExistingOfflineAnswerCache() async throws {
+        let recorder = QARequestRecorder()
+        let mode = QAURLProtocolMode(.response(200, QAFixtures.answer, [:]))
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            return try mode.response()
+        }
+        let cache = QAResponseCacheSpy()
+        let client = makeClient(
+            accountStore: QAMultipleAccountStore.singleAccount(),
+            responseCache: cache
+        )
+        let repository = URLSessionQuestionAnswerRepository(client: client)
+        let route = AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7)
+        _ = try await repository.fetchAnswer(route, cachePolicy: .offlinePackWarm)
+
+        let refreshedJSON = String(decoding: QAFixtures.answer, as: UTF8.self)
+            .replacingOccurrences(of: #""voteup_count":100"#, with: #""voteup_count":101"#)
+            .replacingOccurrences(of: #""vote":"UP""#, with: #""vote":"DOWN""#)
+        mode.set(.response(200, Data(refreshedJSON.utf8), [:]))
+
+        try await repository.refreshCachedVote(
+            accountID: "alice",
+            kind: .answer,
+            contentID: 42,
+            desiredState: .down
+        )
+        let requestCountAfterRefresh = recorder.requests.count
+        let cached = try await repository.fetchAnswer(route, cachePolicy: .cacheOnly)
+
+        XCTAssertEqual(cached.voteState, .down)
+        XCTAssertEqual(cached.voteUpCount, 101)
+        XCTAssertEqual(requestCountAfterRefresh, 2)
+        XCTAssertEqual(recorder.requests.count, requestCountAfterRefresh)
+    }
+
+    func testCacheRefreshSkipsUncachedContentAndPinsEvenCacheOnlyReadsToAccount() async throws {
+        let recorder = QARequestRecorder()
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            return (200, QAFixtures.answer, [:])
+        }
+        let cache = QAResponseCacheSpy()
+        let client = makeClient(
+            accountStore: QAMultipleAccountStore.singleAccount(),
+            responseCache: cache
+        )
+        let repository = URLSessionQuestionAnswerRepository(client: client)
+
+        try await repository.refreshCachedVote(
+            accountID: "alice",
+            kind: .answer,
+            contentID: 42,
+            desiredState: .up
+        )
+        XCTAssertTrue(recorder.requests.isEmpty)
+
+        do {
+            try await repository.refreshCachedVote(
+                accountID: "bob",
+                kind: .answer,
+                contentID: 42,
+                desiredState: .up
+            )
+            XCTFail("Expected accountChanged")
+        } catch {
+            XCTAssertEqual(error as? ZhihuAPIError, .accountChanged)
+        }
+        XCTAssertTrue(recorder.requests.isEmpty)
+    }
+
+    func testMalformedSuccessfulResponseDoesNotOverwriteValidatedCache() async throws {
+        let mode = QAURLProtocolMode(.response(200, QAFixtures.answer, [:]))
+        QAURLProtocol.setHandler { _ in try mode.response() }
+        let cache = QAResponseCacheSpy()
+        let client = makeClient(
+            accountStore: QAMultipleAccountStore.singleAccount(),
+            responseCache: cache
+        )
+        let repository: QuestionAnswerRepository = URLSessionQuestionAnswerRepository(client: client)
+        let route = AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7)
+
+        _ = try await repository.fetchAnswer(route)
+        mode.set(.response(200, Data(#"{"id":99}"#.utf8), [:]))
+
+        do {
+            _ = try await repository.fetchAnswer(route)
+            XCTFail("Expected malformed content")
+        } catch {
+            XCTAssertEqual(error as? QuestionAnswerRepositoryError, .malformedContent)
+        }
+        let storedRequests = await cache.storedRequests()
+        XCTAssertEqual(storedRequests.count, 1)
+
+        mode.set(.failure(.notConnectedToInternet))
+        let cached = try await repository.fetchAnswer(route, cachePolicy: .cacheFirst)
+        XCTAssertEqual(cached.route.contentID, 42)
+    }
+
+    func testAccountCacheRemovalInvalidatesAnOlderConditionalWrite() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "OfflineAPIResponseCacheGenerationTests.\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = FileZhihuAPIResponseCache(directory: directory)
+        let request = ZhihuAPIResponseCacheRequest(
+            accountID: "alice",
+            url: URL(string: "https://www.zhihu.com/api/v4/answers/42")!
+        )
+        let generation = await cache.generation(forAccountID: "alice")
+
+        try await cache.removeResponses(forAccountID: "alice")
+        let stored = await cache.store(
+            Data("late-response".utf8),
+            for: request,
+            ifGenerationMatches: generation
+        )
+
+        XCTAssertFalse(stored)
+        let response = await cache.response(for: request)
+        XCTAssertNil(response)
+    }
+
+    func testMidflightAccountSwitchRejectsResponseBeforeCookieOrCachePersistence() async throws {
+        let alice = QAMultipleAccountStore.session(device: "device-a", login: "login-a")
+        let bob = QAMultipleAccountStore.session(device: "device-b", login: "login-b")
+        let accountStore = QAMultipleAccountStore(
+            sessions: ["alice": alice, "bob": bob],
+            currentAccountID: "alice"
+        )
+        let recorder = QARequestRecorder()
+        QAURLProtocol.setHandler { request in
+            recorder.record(request)
+            try accountStore.switchAccount(to: "bob")
+            return (
+                200,
+                Data("alice-response".utf8),
+                ["Set-Cookie": "captcha_session=alice-only; Domain=.zhihu.com; Path=/"]
+            )
+        }
+        let cache = QAResponseCacheSpy()
+        let client = makeClient(accountStore: accountStore, responseCache: cache)
+
+        do {
+            _ = try await client.data(
+                for: URL(string: "https://www.zhihu.com/api/v4/answers/42")!,
+                authentication: .accountRequired,
+                cachePolicy: .offlineFallback
+            )
+            XCTFail("Expected account switch to invalidate response")
+        } catch {
+            XCTAssertEqual(error as? ZhihuAPIError, .accountChanged)
+        }
+        XCTAssertEqual(
+            recorder.requests.first?.value(forHTTPHeaderField: "Cookie"),
+            "d_c0=device-a; z_c0=login-a"
+        )
+        XCTAssertEqual(accountStore.loadCallCount(), 0)
+        XCTAssertEqual(accountStore.session(for: "bob"), bob)
+        let storeRequests = await cache.storedRequests()
+        XCTAssertTrue(storeRequests.isEmpty)
+    }
+
+    private func makeClient(
+        accountStore: AccountJSONStore,
+        responseCache: any ZhihuAPIResponseCaching
+    ) -> ZhihuAPIClient {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [QAURLProtocol.self]
+        return ZhihuAPIClient(
+            accountStore: accountStore,
+            session: URLSession(configuration: configuration),
+            responseCache: responseCache
+        )
     }
 }
 
@@ -1114,6 +1776,10 @@ private enum QAFixtures {
 
     static let answer = Data(
         #"{"id":42,"content":"<p>回答正文</p>","author":{"id":"member","url_token":"author","name":"作者","headline":"简介","avatar_url":"https://pic.zhimg.com/avatar.jpg"},"question":{"id":7,"title":"原生问题"},"attachment":null,"voteup_count":100,"favlists_count":2,"comment_count":3,"thanks_count":99,"created_time":1000,"updated_time":2000,"ip_info":"江苏","url":"https://www.zhihu.com/question/7/answer/42","reaction":{"relation":{"vote":"UP"}},"endorsements":[{"action_url":"https://www.zhihu.com/column/c_1533471233991028736","elements":[{"type":"IMAGE","image_key":"seal"},{"type":"TEXT","content":"周刊收录"},{"type":"IMAGE","image_key":"arrow"}]}]}"#.utf8
+    )
+
+    static let collections = Data(
+        #"{"data":[{"id":"collection-1","title":"离线收藏夹","is_favorited":true}]}"#.utf8
     )
 
     static func answerPage(next: String?) -> Data {
@@ -1178,6 +1844,28 @@ private enum QAFixtures {
         invitationPreface: nil,
         endorsements: []
     )
+
+    static func answerDTO(id: Int64) -> AnswerDTO {
+        AnswerDTO(
+            route: AnswerRouteDTO(contentID: id, kind: .answer, questionID: 7),
+            title: "原生问题",
+            questionID: 7,
+            author: author,
+            blocks: [.paragraph(UUID(), [QAInlineRun(text: "正文")])],
+            attachment: nil,
+            sourceURL: URL(string: "https://www.zhihu.com/question/7/answer/\(id)")!,
+            voteUpCount: 1,
+            favoriteCount: 0,
+            commentCount: 0,
+            voteState: .neutral,
+            favoriteState: .unknown,
+            createdTimeSeconds: 1,
+            updatedTimeSeconds: 1,
+            ipLocation: nil,
+            invitationPreface: nil,
+            endorsements: []
+        )
+    }
 }
 
 private final class QARequestRecorder: @unchecked Sendable {
@@ -1243,27 +1931,298 @@ private final class QAAccountStore: AccountJSONStore, @unchecked Sendable {
     }
 }
 
+private actor QAResponseCacheSpy: ZhihuAPIResponseCaching {
+    private let storesSuccessfully: Bool
+    private var responses: [ZhihuAPIResponseCacheRequest: Data] = [:]
+    private var readRequestStorage: [ZhihuAPIResponseCacheRequest] = []
+    private var storedRequestStorage: [ZhihuAPIResponseCacheRequest] = []
+
+    init(storesSuccessfully: Bool = true) {
+        self.storesSuccessfully = storesSuccessfully
+    }
+
+    func prime(_ data: Data, for request: ZhihuAPIResponseCacheRequest) {
+        responses[request] = data
+    }
+
+    func response(for request: ZhihuAPIResponseCacheRequest) async -> Data? {
+        readRequestStorage.append(request)
+        return responses[request]
+    }
+
+    func store(_ data: Data, for request: ZhihuAPIResponseCacheRequest) async -> Bool {
+        storedRequestStorage.append(request)
+        guard storesSuccessfully else { return false }
+        responses[request] = data
+        return true
+    }
+
+    func removeResponse(for request: ZhihuAPIResponseCacheRequest) async throws {
+        responses.removeValue(forKey: request)
+    }
+
+    func removeResponses(forAccountID accountID: String) async throws {
+        responses = responses.filter { $0.key.accountID != accountID }
+    }
+
+    func readRequests() -> [ZhihuAPIResponseCacheRequest] {
+        readRequestStorage
+    }
+
+    func storedRequests() -> [ZhihuAPIResponseCacheRequest] {
+        storedRequestStorage
+    }
+}
+
+private final class QACacheClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var now: Date
+
+    init(now: Date) {
+        self.now = now
+    }
+
+    func current() -> Date {
+        lock.lock(); defer { lock.unlock() }
+        return now
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        now.addTimeInterval(interval)
+    }
+}
+
+private final class QAURLProtocolMode: @unchecked Sendable {
+    enum Value {
+        case response(Int, Data, [String: String])
+        case failure(URLError.Code)
+    }
+
+    private let lock = NSLock()
+    private var value: Value
+
+    init(_ value: Value) {
+        self.value = value
+    }
+
+    func set(_ value: Value) {
+        lock.lock(); self.value = value; lock.unlock()
+    }
+
+    func response() throws -> (Int, Data, [String: String]) {
+        lock.lock(); defer { lock.unlock() }
+        switch value {
+        case let .response(status, data, headers):
+            return (status, data, headers)
+        case let .failure(code):
+            throw URLError(code)
+        }
+    }
+}
+
+private final class QAMultipleAccountStore: MultipleAccountJSONStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var sessions: [String: String]
+    private var selectedAccountID: String?
+    private var loadCallCountStorage = 0
+
+    init(sessions: [String: String], currentAccountID: String?) {
+        self.sessions = sessions
+        selectedAccountID = currentAccountID
+    }
+
+    static func singleAccount() -> QAMultipleAccountStore {
+        QAMultipleAccountStore(
+            sessions: ["alice": session(device: "device-a", login: "login-a")],
+            currentAccountID: "alice"
+        )
+    }
+
+    static func session(device: String, login: String) -> String {
+        #"{"cookies":{"d_c0":"\#(device)","z_c0":"\#(login)"},"userAgent":"qa-test"}"#
+    }
+
+    func load() throws -> String? {
+        lock.lock(); defer { lock.unlock() }
+        loadCallCountStorage += 1
+        return selectedAccountID.flatMap { sessions[$0] }
+    }
+
+    func save(_ accountJSON: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard let selectedAccountID else { throw QAStubError.failed }
+        sessions[selectedAccountID] = accountJSON
+    }
+
+    func clear() throws {
+        lock.lock(); defer { lock.unlock() }
+        sessions.removeAll()
+        selectedAccountID = nil
+    }
+
+    func update(_ transform: (String?) throws -> String?) throws {
+        lock.lock(); defer { lock.unlock() }
+        let current = selectedAccountID.flatMap { sessions[$0] }
+        let updated = try transform(current)
+        guard let selectedAccountID else {
+            if updated != nil { throw QAStubError.failed }
+            return
+        }
+        sessions[selectedAccountID] = updated
+    }
+
+    func updateCurrentAccount(
+        expectedAccountID: String?,
+        _ transform: (String?) throws -> String?
+    ) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard selectedAccountID == expectedAccountID else {
+            throw MultipleAccountStoreError.accountChanged
+        }
+        let updated = try transform(selectedAccountID.flatMap { sessions[$0] })
+        guard let selectedAccountID else {
+            if updated != nil { throw QAStubError.failed }
+            return
+        }
+        sessions[selectedAccountID] = updated
+    }
+
+    func listAccounts() throws -> [NativeSavedAccountSummary] {
+        lock.lock(); defer { lock.unlock() }
+        return sessions.keys.sorted().map {
+            NativeSavedAccountSummary(id: $0, name: $0, urlToken: nil, avatarURL: nil)
+        }
+    }
+
+    func currentAccountID() throws -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return selectedAccountID
+    }
+
+    func currentAccountSnapshot() throws -> MultipleAccountJSONSnapshot {
+        lock.lock(); defer { lock.unlock() }
+        return MultipleAccountJSONSnapshot(
+            accountID: selectedAccountID,
+            accountJSON: selectedAccountID.flatMap { sessions[$0] }
+        )
+    }
+
+    func switchAccount(to accountID: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard sessions[accountID] != nil else { throw MultipleAccountStoreError.accountNotFound }
+        selectedAccountID = accountID
+    }
+
+    func deleteAccount(_ accountID: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard sessions[accountID] != nil else { throw MultipleAccountStoreError.accountNotFound }
+        guard selectedAccountID != accountID else {
+            throw MultipleAccountStoreError.cannotDeleteCurrentAccount
+        }
+        sessions.removeValue(forKey: accountID)
+    }
+
+    func clearCurrentAccount() throws {
+        lock.lock(); defer { lock.unlock() }
+        if let selectedAccountID { sessions.removeValue(forKey: selectedAccountID) }
+        selectedAccountID = nil
+    }
+
+    func session(for accountID: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return sessions[accountID]
+    }
+
+    func loadCallCount() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return loadCallCountStorage
+    }
+}
+
 private enum QAStubError: LocalizedError { case failed; var errorDescription: String? { "测试失败" } }
 
 private final class StubQuestionAnswerRepository: QuestionAnswerRepository, @unchecked Sendable {
+    private let eventLock = NSLock()
+    private var fetchedAnswerIDStorage: [Int64] = []
+    private var readHistoryTokenStorage: [String] = []
     var questionResult: Result<QuestionDTO, Error> = .failure(QAStubError.failed)
     var answerPageResults: [Result<QuestionAnswerPageDTO, Error>] = []
     var answerResult: Result<AnswerDTO, Error> = .failure(QAStubError.failed)
+    var answerResultsByID: [Int64: Result<AnswerDTO, Error>] = [:]
+    var requiresCacheOnly = false
 
     func fetchQuestion(_ route: QuestionRouteDTO) async throws -> QuestionDTO { try questionResult.get() }
+    func fetchQuestion(
+        _ route: QuestionRouteDTO,
+        cachePolicy: ZhihuAPICachePolicy
+    ) async throws -> QuestionDTO {
+        try requireLegacyCompatible(cachePolicy)
+        return try await fetchQuestion(route)
+    }
     func fetchQuestionAnswers(questionID: Int64, sort: QuestionAnswerSort, after nextURL: URL?) async throws -> QuestionAnswerPageDTO {
         guard !answerPageResults.isEmpty else { return QuestionAnswerPageDTO(items: [], nextURL: nil, isEnd: true) }
         return try answerPageResults.removeFirst().get()
     }
+    func fetchQuestionAnswers(
+        questionID: Int64,
+        sort: QuestionAnswerSort,
+        after nextURL: URL?,
+        cachePolicy: ZhihuAPICachePolicy
+    ) async throws -> QuestionAnswerPageDTO {
+        try requireLegacyCompatible(cachePolicy)
+        return try await fetchQuestionAnswers(questionID: questionID, sort: sort, after: nextURL)
+    }
     func setQuestionFollowing(_ following: Bool, questionID: Int64) async throws {}
-    func fetchAnswer(_ route: AnswerRouteDTO) async throws -> AnswerDTO { try answerResult.get() }
+    func fetchAnswer(_ route: AnswerRouteDTO) async throws -> AnswerDTO {
+        eventLock.withLock { fetchedAnswerIDStorage.append(route.contentID) }
+        return try (answerResultsByID[route.contentID] ?? answerResult).get()
+    }
+    func fetchAnswer(
+        _ route: AnswerRouteDTO,
+        cachePolicy: ZhihuAPICachePolicy
+    ) async throws -> AnswerDTO {
+        try requireLegacyCompatible(cachePolicy)
+        return try await fetchAnswer(route)
+    }
     func setVote(_ state: QAVoteState, route: AnswerRouteDTO) async throws -> QAVoteMutationResult {
         QAVoteMutationResult(state: state, voteUpCount: 1)
     }
     func fetchCollections(route: AnswerRouteDTO) async throws -> QACollectionsResult {
         QACollectionsResult(items: [], favoriteState: .notFavorited)
     }
+    func fetchCollections(
+        route: AnswerRouteDTO,
+        cachePolicy: ZhihuAPICachePolicy
+    ) async throws -> QACollectionsResult {
+        try requireLegacyCompatible(cachePolicy)
+        return try await fetchCollections(route: route)
+    }
     func setCollection(_ selected: Bool, collectionID: String, route: AnswerRouteDTO) async throws {}
+    func recordReadHistory(contentToken: String, contentType: String) async {
+        eventLock.withLock { readHistoryTokenStorage.append(contentToken) }
+    }
+
+    func fetchedAnswerIDs() -> [Int64] {
+        eventLock.withLock { fetchedAnswerIDStorage }
+    }
+
+    func readHistoryTokens() -> [String] {
+        eventLock.withLock { readHistoryTokenStorage }
+    }
+
+    private func requireLegacyCompatible(_ cachePolicy: ZhihuAPICachePolicy) throws {
+        if requiresCacheOnly {
+            guard case .cacheOnly = cachePolicy else { throw QAStubError.failed }
+            return
+        }
+        switch cachePolicy {
+        case .disabled, .offlineFallback:
+            return
+        case .cacheFirst, .cacheOnly, .offlinePackWarm:
+            throw QAStubError.failed
+        }
+    }
 }
 
 private actor StubOpenedHistory: AnswerOpenedHistory {

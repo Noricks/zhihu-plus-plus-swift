@@ -34,65 +34,147 @@ private struct QAAnswerPagerSurface: View {
     let hapticFeedback: NativeHapticFeedbackAction
     let onNavigate: (QANavigationIntent) -> Void
     @State private var posterDocument: NativeContentPosterDocument?
+    @State private var showsCollections = false
 
     var body: some View {
-        ZStack(alignment: .top) {
-            QAAnswerPageController(
-                pager: pager,
-                pinAnswerDate: preferences.pinAnswerDate,
-                hapticFeedback: hapticFeedback,
-                onNavigate: onNavigate
-            )
-            if let error = pager.switchError {
-                Button {
-                    Task { await pager.retrySwitch() }
-                } label: {
-                    Label("下一个回答加载失败，点此重试", systemImage: "arrow.clockwise")
+        GeometryReader { proxy in
+            ZStack(alignment: .top) {
+                QAAnswerPageController(
+                    pager: pager,
+                    pinAnswerDate: preferences.pinAnswerDate,
+                    hapticFeedback: hapticFeedback,
+                    onNavigate: onNavigate
+                )
+                if let error = pager.switchError {
+                    Button {
+                        Task { await pager.retrySwitch() }
+                    } label: {
+                        Label("下一个回答加载失败，点此重试", systemImage: "arrow.clockwise")
+                            .font(.caption)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(.thinMaterial, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint(error)
+                    .padding(.top, 8)
+                } else if let notice = pager.boundaryNotice {
+                    Text(notice)
                         .font(.caption)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(.thinMaterial, in: Capsule())
+                        .accessibilityAddTraits(.isStaticText)
+                        .padding(.top, 8)
                 }
-                .buttonStyle(.plain)
-                .accessibilityHint(error)
-                .padding(.top, 8)
-            } else if let notice = pager.boundaryNotice {
-                Text(notice)
-                    .font(.caption)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(.thinMaterial, in: Capsule())
-                    .accessibilityAddTraits(.isStaticText)
-                    .padding(.top, 8)
             }
-        }
-        .navigationTitle(answer.initialRoute.kind == .answer ? "回答" : "文章")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            .navigationTitle(answer.initialRoute.kind == .answer ? "回答" : "文章")
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 if let content = answer.content {
-                    Menu {
-                        Button {
-                            UIPasteboard.general.url = content.sourceURL
-                        } label: {
-                            Label("复制链接", systemImage: "doc.on.doc")
+                    AnswerActionBar(
+                        content: content,
+                        voteInFlight: answer.isVoteMutationInFlight,
+                        bottomSafeAreaOverlap: QAEngagementBarLayoutPolicy.safeAreaOverlap(
+                            for: proxy.safeAreaInsets.bottom
+                        ),
+                        onAuthor: {
+                            if let intent = content.author.personIntent { onNavigate(intent) }
+                        },
+                        onVoteUp: {
+                            let target: QAVoteState = content.voteState == .up ? .neutral : .up
+                            Task { await answer.setVote(target) }
+                        },
+                        onVoteDown: {
+                            let target: QAVoteState = content.voteState == .down ? .neutral : .down
+                            Task { await answer.setVote(target) }
+                        },
+                        onFavorite: {
+                            showsCollections = true
+                            Task { await answer.loadCollections() }
+                        },
+                        onComments: {
+                            let subject: CommentSubjectDTO = content.route.kind == .answer
+                                ? .answer(content.route.contentID)
+                                : .article(content.route.contentID)
+                            onNavigate(.comments(CommentThreadRouteDTO(
+                                subject: subject,
+                                shareContext: CommentShareContextDTO(
+                                    title: content.title,
+                                    excerpt: QACommentShareExcerpt.value(from: content.blocks),
+                                    sourceURL: content.sourceURL
+                                )
+                            )))
                         }
-                        Button {
-                            posterDocument = NativeContentPosterDocument(answer: content)
-                        } label: {
-                            Label("分享内容海报", systemImage: "photo.on.rectangle.angled")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                    }
-                    .accessibilityLabel("更多操作")
+                    )
                 }
             }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    if let content = answer.content {
+                        Menu {
+                            Button {
+                                UIPasteboard.general.url = content.sourceURL
+                            } label: {
+                                Label("复制链接", systemImage: "doc.on.doc")
+                            }
+                            Button {
+                                posterDocument = NativeContentPosterDocument(answer: content)
+                            } label: {
+                                Label("分享内容海报", systemImage: "photo.on.rectangle.angled")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                        }
+                        .accessibilityLabel("更多操作")
+                    }
+                }
+            }
+            .sheet(item: $posterDocument) { document in
+                NativeContentPosterShareView(document: document)
+            }
+            .sheet(isPresented: $showsCollections) {
+                QACollectionsSheet(store: answer)
+            }
+            .background(NativeAnswerInteractivePopBridge())
         }
-        .sheet(item: $posterDocument) { document in
-            NativeContentPosterShareView(document: document)
+    }
+}
+
+enum QACommentShareExcerpt {
+    static func value(from blocks: [QABodyBlock]) -> String? {
+        let text = blocks
+            .compactMap(visibleText)
+            .joined(separator: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard !text.isEmpty else { return nil }
+        let limit = text.index(text.startIndex, offsetBy: min(160, text.count))
+        return String(text[..<limit])
+    }
+
+    private static func visibleText(_ block: QABodyBlock) -> String? {
+        switch block {
+        case let .paragraph(_, runs),
+             let .heading(_, _, runs),
+             let .quote(_, runs),
+             let .segment(_, _, runs):
+            return runs.map(\.text).joined()
+        case let .list(_, _, items):
+            return items.flatMap { item in
+                [item.runs.map(\.text).joined()] + item.nestedLists.flatMap(listText)
+            }.joined(separator: " ")
+        case let .code(_, _, text), let .formula(_, text):
+            return text
+        case .image, .video, .divider:
+            return nil
         }
-        .background(NativeAnswerInteractivePopBridge())
+    }
+
+    private static func listText(_ list: QAListGroup) -> [String] {
+        list.items.flatMap { item in
+            [item.runs.map(\.text).joined()] + item.nestedLists.flatMap(listText)
+        }
     }
 }
 
@@ -360,6 +442,7 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
             animated: false
         )
         context.coordinator.recordPagingAvailability()
+        context.coordinator.scheduleAdjacentControllerWarmup(in: controller)
         DispatchQueue.main.async {
             context.coordinator.establishSystemEdgePrecedence(in: controller)
         }
@@ -372,6 +455,7 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
         context.coordinator.updatePinAnswerDate(pinAnswerDate)
         context.coordinator.feedback = NativeAnswerPagerFeedback(action: hapticFeedback)
         context.coordinator.establishSystemEdgePrecedence(in: controller)
+        context.coordinator.scheduleAdjacentControllerWarmup(in: controller)
         guard let visible = controller.viewControllers?.first as? QAHostedAnswerController else { return }
         if visible.answerID != pager.current.id, !context.coordinator.isTransitioning {
             controller.setViewControllers(
@@ -404,6 +488,7 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
         private var recordedCurrentID: Int64?
         private var recordedPreviousID: Int64?
         private var recordedNextID: Int64?
+        private var scheduledWarmControllerIDs: Set<Int64> = []
 
         init(
             pager: AnswerPagerStore,
@@ -424,6 +509,30 @@ private struct QAAnswerPageController: UIViewControllerRepresentable {
             created.view.backgroundColor = .systemBackground
             controllers[store.id] = created
             return created
+        }
+
+        /// UIPageViewController asks for neighboring controllers lazily. Build
+        /// their SwiftUI hosting trees one run-loop turn earlier so the swipe
+        /// begins with a laid-out page instead of a loading controller.
+        func scheduleAdjacentControllerWarmup(in pageController: UIPageViewController) {
+            let stores = [pager.previous, pager.next].compactMap { $0 }
+            let pending = stores.filter { scheduledWarmControllerIDs.insert($0.id).inserted }
+            guard !pending.isEmpty else { return }
+            DispatchQueue.main.async { [weak self, weak pageController] in
+                guard let self, let pageController else { return }
+                guard pageController.view.bounds.width > 0,
+                      pageController.view.bounds.height > 0
+                else {
+                    pending.forEach { self.scheduledWarmControllerIDs.remove($0.id) }
+                    return
+                }
+                for store in pending {
+                    let controller = self.controller(for: store)
+                    controller.loadViewIfNeeded()
+                    controller.view.frame = pageController.view.bounds
+                    controller.view.layoutIfNeeded()
+                }
+            }
         }
 
         func refreshHostedRoots() {

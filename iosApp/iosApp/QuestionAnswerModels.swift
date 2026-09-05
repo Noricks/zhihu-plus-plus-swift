@@ -1,6 +1,6 @@
 import Foundation
 
-enum QAContentKind: String, Hashable, Sendable {
+enum QAContentKind: String, Codable, Hashable, Sendable {
     case answer
     case article
 }
@@ -8,10 +8,16 @@ enum QAContentKind: String, Hashable, Sendable {
 struct QuestionRouteDTO: Hashable, Sendable {
     let questionID: Int64
     let provisionalTitle: String
+    let prefersCachedResponse: Bool
 
-    init(questionID: Int64, provisionalTitle: String = "") {
+    init(
+        questionID: Int64,
+        provisionalTitle: String = "",
+        prefersCachedResponse: Bool = false
+    ) {
         self.questionID = questionID
         self.provisionalTitle = provisionalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.prefersCachedResponse = prefersCachedResponse
     }
 }
 
@@ -21,19 +27,22 @@ struct AnswerRouteDTO: Hashable, Sendable {
     let questionID: Int64?
     let provisionalTitle: String
     let source: AnswerPageSourceDTO?
+    let prefersCachedResponse: Bool
 
     init(
         contentID: Int64,
         kind: QAContentKind,
         questionID: Int64? = nil,
         provisionalTitle: String = "",
-        source: AnswerPageSourceDTO? = nil
+        source: AnswerPageSourceDTO? = nil,
+        prefersCachedResponse: Bool = false
     ) {
         self.contentID = contentID
         self.kind = kind
         self.questionID = questionID
         self.provisionalTitle = provisionalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         self.source = source
+        self.prefersCachedResponse = prefersCachedResponse
     }
 }
 

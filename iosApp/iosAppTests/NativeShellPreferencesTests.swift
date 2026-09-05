@@ -211,6 +211,97 @@ final class NativeShellPreferencesTests: XCTestCase {
         XCTAssertEqual(restored.homeRefreshTargetItemCount, 20)
     }
 
+    func testRecommendationSourceToggleCyclesAndDescribesItsDestination() {
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePolicy.next(after: .app),
+            .web
+        )
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePolicy.next(after: .web),
+            .app
+        )
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePolicy.next(
+                after: HomeRecommendationSourceTogglePolicy.next(after: .app)
+            ),
+            .app
+        )
+
+        let app = HomeRecommendationSourceTogglePolicy.presentation(for: .app)
+        XCTAssertEqual(app.visibleLabel, "App")
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePresentation.accessibilityLabel,
+            "推荐来源"
+        )
+        XCTAssertEqual(app.accessibilityValue, "App 接口")
+        XCTAssertEqual(app.accessibilityHint, "轻点切换到 Web 接口")
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePresentation.accessibilityIdentifier,
+            "home_recommendation_source_toggle"
+        )
+
+        let web = HomeRecommendationSourceTogglePolicy.presentation(for: .web)
+        XCTAssertEqual(web.visibleLabel, "Web")
+        XCTAssertEqual(web.accessibilityValue, "Web 接口")
+        XCTAssertEqual(web.accessibilityHint, "轻点切换到 App 接口")
+    }
+
+    func testRecommendationSourceToggleOnlyAppearsOnRecommendationsAndRequiresLoginForWeb() {
+        XCTAssertTrue(HomeRecommendationSourceTogglePolicy.isVisible(
+            selectedChannel: .recommendation
+        ))
+        XCTAssertFalse(HomeRecommendationSourceTogglePolicy.isVisible(
+            selectedChannel: .following
+        ))
+        XCTAssertFalse(HomeRecommendationSourceTogglePolicy.isVisible(
+            selectedChannel: .hot
+        ))
+        XCTAssertFalse(HomeRecommendationSourceTogglePolicy.isVisible(
+            selectedChannel: .daily
+        ))
+
+        XCTAssertTrue(HomeRecommendationSourceTogglePolicy.canSwitch(
+            from: .app,
+            isSignedIn: true
+        ))
+        XCTAssertFalse(HomeRecommendationSourceTogglePolicy.canSwitch(
+            from: .app,
+            isSignedIn: false
+        ))
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePolicy.accessibilityHint(
+                for: .app,
+                isSignedIn: false
+            ),
+            "登录后可切换到 Web 接口"
+        )
+        XCTAssertTrue(HomeRecommendationSourceTogglePolicy.canSwitch(
+            from: .web,
+            isSignedIn: false
+        ))
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePolicy.permittedSource(
+                .web,
+                isSignedIn: false
+            ),
+            .app
+        )
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePolicy.permittedSource(
+                .web,
+                isSignedIn: true
+            ),
+            .web
+        )
+        XCTAssertEqual(
+            HomeRecommendationSourceTogglePolicy.permittedSource(
+                .app,
+                isSignedIn: false
+            ),
+            .app
+        )
+    }
+
     func testHapticPreferencesPersistUserOverridesAndRejectUnknownStrength() {
         let defaults = makeDefaults()
         let preferences = NativeShellPreferences(defaults: defaults)
@@ -339,15 +430,15 @@ final class NativeShellPreferencesTests: XCTestCase {
     }
 
     func testHomeChannelsHaveFixedProductOrder() {
-        XCTAssertEqual(HomeChannel.allCases, [.recommendation, .following, .hot, .daily])
+        XCTAssertEqual(HomeChannel.allCases, [.following, .recommendation, .hot, .daily])
         XCTAssertEqual(HomeChannel.allCases.map(\.id), [
-            "recommendation",
             "following",
+            "recommendation",
             "hot",
             "daily",
         ])
         XCTAssertEqual(HomeChannel.allCases.map(\.id), HomeChannel.allCases.map(\.rawValue))
-        XCTAssertEqual(HomeChannel.allCases.map(\.title), ["推荐", "关注", "热榜", "日报"])
+        XCTAssertEqual(HomeChannel.allCases.map(\.title), ["关注", "推荐", "热榜", "日报"])
     }
 
     func testChannelSwipeRequiresHorizontalIntentAndEnoughDistance() {
@@ -479,17 +570,13 @@ final class NativeShellPreferencesTests: XCTestCase {
         XCTAssertTrue(presentations.presentation(for: .daily).isRefreshing)
     }
 
-    func testHomeRefreshIndicatorAppearsForPullOrRefreshAndOtherwiseDisappears() {
+    func testHomeRefreshIndicatorAppearsFromFirstPullPointAndStaysVisibleWhileRefreshing() {
         XCTAssertFalse(NativeHomeRefreshIndicatorPresentation.isVisible(
             pullDistance: 0,
             isRefreshing: false
         ))
-        XCTAssertFalse(NativeHomeRefreshIndicatorPresentation.isVisible(
-            pullDistance: 7.9,
-            isRefreshing: false
-        ))
         XCTAssertTrue(NativeHomeRefreshIndicatorPresentation.isVisible(
-            pullDistance: 8,
+            pullDistance: 1,
             isRefreshing: false
         ))
         XCTAssertTrue(NativeHomeRefreshIndicatorPresentation.isVisible(
@@ -498,20 +585,66 @@ final class NativeShellPreferencesTests: XCTestCase {
         ))
     }
 
-    func testHomeTopBarHasOnlyCreationAndNotificationControls() {
-        XCTAssertEqual(HomeTopBarControl.visibleControls, [.creation, .notifications])
+    func testHomeRefreshIndicatorProgressivelyFadesAndScalesWithoutOvershooting() {
+        let distances: [CGFloat] = [-10, 0, 1, 10, 20, 30, 60]
+        let progresses = distances.map {
+            NativeHomeRefreshIndicatorPresentation.progress(
+                pullDistance: $0,
+                isRefreshing: false
+            )
+        }
+
+        XCTAssertEqual(progresses.first ?? -1, 0, accuracy: 0.001)
+        XCTAssertEqual(progresses.last ?? -1, 1, accuracy: 0.001)
+        XCTAssertEqual(progresses, progresses.sorted())
+
+        for distance in distances {
+            let opacity = NativeHomeRefreshIndicatorPresentation.opacity(
+                pullDistance: distance,
+                isRefreshing: false
+            )
+            let scale = NativeHomeRefreshIndicatorPresentation.scale(
+                pullDistance: distance,
+                isRefreshing: false
+            )
+            XCTAssertGreaterThanOrEqual(opacity, 0)
+            XCTAssertLessThanOrEqual(opacity, 1)
+            XCTAssertGreaterThanOrEqual(scale, NativeHomeRefreshIndicatorPresentation.minimumScale)
+            XCTAssertLessThanOrEqual(scale, 1)
+        }
+
+        XCTAssertEqual(NativeHomeRefreshIndicatorPresentation.opacity(
+            pullDistance: 0,
+            isRefreshing: true
+        ), 1)
+        XCTAssertEqual(NativeHomeRefreshIndicatorPresentation.scale(
+            pullDistance: 0,
+            isRefreshing: true
+        ), 1)
     }
 
-    func testHomeNotificationIndicatorOnlyShowsDotForUnreadNotifications() {
-        let empty = HomeNotificationIndicatorPresentation(unreadCount: 0)
-        XCTAssertFalse(empty.showsDot)
-        XCTAssertEqual(empty.accessibilityLabel, "通知")
-        XCTAssertEqual(empty.accessibilityValue, "无未读通知")
-
-        let unread = HomeNotificationIndicatorPresentation(unreadCount: 3)
-        XCTAssertTrue(unread.showsDot)
-        XCTAssertEqual(unread.accessibilityLabel, "通知，3 条未读")
-        XCTAssertEqual(unread.accessibilityValue, "3 条未读")
+    func testShortPullRefreshUsesCompactThresholdAndRejectsDuplicateTriggers() {
+        XCTAssertLessThan(NativeShortPullRefreshPolicy.triggerDistance, 40)
+        XCTAssertFalse(NativeShortPullRefreshPolicy.shouldTrigger(
+            maximumPullDistance: NativeShortPullRefreshPolicy.triggerDistance - 0.1,
+            isEnabled: true,
+            isRefreshing: false
+        ))
+        XCTAssertTrue(NativeShortPullRefreshPolicy.shouldTrigger(
+            maximumPullDistance: NativeShortPullRefreshPolicy.triggerDistance,
+            isEnabled: true,
+            isRefreshing: false
+        ))
+        XCTAssertFalse(NativeShortPullRefreshPolicy.shouldTrigger(
+            maximumPullDistance: NativeShortPullRefreshPolicy.triggerDistance + 20,
+            isEnabled: false,
+            isRefreshing: false
+        ))
+        XCTAssertFalse(NativeShortPullRefreshPolicy.shouldTrigger(
+            maximumPullDistance: NativeShortPullRefreshPolicy.triggerDistance + 20,
+            isEnabled: true,
+            isRefreshing: true
+        ))
     }
 
     func testHomeTabDoubleTapRequiresTwoReselectEventsAndTriggersOncePerPair() {
@@ -656,9 +789,20 @@ final class NativeShellPreferencesTests: XCTestCase {
         ))
     }
 
+    func testRefreshSuccessHapticUsesGentlerEventIntensity() {
+        let refreshIntensity = NativeHapticFeedbackIntensityPolicy.intensity(for: .refreshSucceeded)
+
+        XCTAssertEqual(refreshIntensity, 0.55, accuracy: 0.001)
+        XCTAssertGreaterThan(refreshIntensity, NativeHapticFeedbackIntensityPolicy.intensity(
+            for: .refreshIgnored
+        ))
+        XCTAssertLessThan(refreshIntensity, NativeHapticFeedbackIntensityPolicy.intensity(
+            for: .commit
+        ))
+    }
+
     func testHomeHeaderStaysPinnedAtCompactHeightWithoutMovingListViewport() {
-        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.horizontalContentInset, 20)
-        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.actionBarHeight, 48)
+        XCTAssertEqual(NativeHomeHeaderLayoutPolicy.horizontalContentInset, 14)
         XCTAssertEqual(NativeHomeHeaderLayoutPolicy.channelSelectorHeight, 48)
         XCTAssertEqual(NativeHomeHeaderLayoutPolicy.expandedHeaderHeight, 48)
 
@@ -682,6 +826,9 @@ final class NativeShellPreferencesTests: XCTestCase {
     func testHomeFeedTitlesUseUnlimitedLinesWhileStandardRowsRemainCompact() {
         XCTAssertEqual(FeedItemTitleDisplayMode.compact.lineLimit, 2)
         XCTAssertNil(FeedItemTitleDisplayMode.full.lineLimit)
+        XCTAssertEqual(NativeZhihuVisualStyle.titlePointSize, 18)
+        XCTAssertEqual(NativeZhihuVisualStyle.summaryPointSize, 16)
+        XCTAssertEqual(NativeZhihuVisualStyle.contentSpacing, 8)
     }
 
     func testRecommendationReturnDoesNotReplayAnAlreadyHandledScrollRequest() {
@@ -732,14 +879,14 @@ final class NativeShellPreferencesTests: XCTestCase {
 
         XCTAssertEqual(
             NativeChannelSelectorScrollAlignment.alignment(
-                for: HomeChannel.recommendation.id,
+                for: HomeChannel.following.id,
                 in: channelIDs
             ),
             .leading
         )
         XCTAssertEqual(
             NativeChannelSelectorScrollAlignment.alignment(
-                for: HomeChannel.following.id,
+                for: HomeChannel.recommendation.id,
                 in: channelIDs
             ),
             .center
@@ -843,6 +990,42 @@ final class NativeShellPreferencesTests: XCTestCase {
         XCTAssertFalse(NativeChannelSwipePolicy.shouldBegin(velocity: CGPoint(x: 20, y: 300)))
         XCTAssertFalse(NativeChannelSwipePolicy.shouldBegin(velocity: CGPoint(x: 100, y: 100)))
         XCTAssertTrue(NativeChannelSwipePolicy.shouldBegin(velocity: CGPoint(x: 300, y: 20)))
+    }
+
+    func testChannelSwipePrefetchesTheAdjacentPageAfterAShortHorizontalMove() {
+        XCTAssertNil(NativeChannelPrefetchPolicy.targetIndex(
+            currentIndex: 1,
+            channelCount: 4,
+            translation: 11.9
+        ))
+        XCTAssertEqual(NativeChannelPrefetchPolicy.targetIndex(
+            currentIndex: 1,
+            channelCount: 4,
+            translation: 12
+        ), 0)
+        XCTAssertEqual(NativeChannelPrefetchPolicy.targetIndex(
+            currentIndex: 1,
+            channelCount: 4,
+            translation: -12
+        ), 2)
+    }
+
+    func testChannelSwipePrefetchNeverCrossesAnEdgeOrUsesInvalidState() {
+        XCTAssertNil(NativeChannelPrefetchPolicy.targetIndex(
+            currentIndex: 0,
+            channelCount: 4,
+            translation: 40
+        ))
+        XCTAssertNil(NativeChannelPrefetchPolicy.targetIndex(
+            currentIndex: 3,
+            channelCount: 4,
+            translation: -40
+        ))
+        XCTAssertNil(NativeChannelPrefetchPolicy.targetIndex(
+            currentIndex: 0,
+            channelCount: 0,
+            translation: -40
+        ))
     }
 
     private func makeDefaults() -> UserDefaults {

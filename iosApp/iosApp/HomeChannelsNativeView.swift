@@ -50,14 +50,14 @@ struct HomeChannelsNativeView: View {
     @State private var wasOperationallyVisible = false
     @State private var refreshStatusNow = Date()
 
+    let recommendationSource: HomeRecommendationSource
+    let isSignedIn: Bool
     let isOperationallyVisible: Bool
     let doubleTapRefreshRequest: UInt
-    let notificationUnreadCount: Int
+    let onRecommendationSourceChange: (HomeRecommendationSource) -> Void
     let onOpenFeed: (FeedItemRoute) -> Void
     let onOpenPerson: (PersonRoutePayload) -> Void
     let onOpenDaily: (DailyStoryDestination) -> Void
-    let onOpenCreation: () -> Void
-    let onOpenNotifications: () -> Void
 
     init(
         selectedChannelID: Binding<HomeChannel.ID>,
@@ -65,14 +65,14 @@ struct HomeChannelsNativeView: View {
         followingStore: FollowNativeStore,
         hotStore: HotFeedStore,
         dailyStore: DailyNativeStore,
+        recommendationSource: HomeRecommendationSource,
+        isSignedIn: Bool,
         doubleTapRefreshRequest: UInt,
         isOperationallyVisible: Bool,
-        notificationUnreadCount: Int,
+        onRecommendationSourceChange: @escaping (HomeRecommendationSource) -> Void,
         onOpenFeed: @escaping (FeedItemRoute) -> Void,
         onOpenPerson: @escaping (PersonRoutePayload) -> Void,
-        onOpenDaily: @escaping (DailyStoryDestination) -> Void,
-        onOpenCreation: @escaping () -> Void,
-        onOpenNotifications: @escaping () -> Void
+        onOpenDaily: @escaping (DailyStoryDestination) -> Void
     ) {
         _selectedChannelID = selectedChannelID
         _recommendationStore = ObservedObject(wrappedValue: recommendationStore)
@@ -80,14 +80,14 @@ struct HomeChannelsNativeView: View {
         _hotStore = ObservedObject(wrappedValue: hotStore)
         _dailyStore = ObservedObject(wrappedValue: dailyStore)
         _lastSelectedChannelID = State(initialValue: selectedChannelID.wrappedValue)
+        self.recommendationSource = recommendationSource
+        self.isSignedIn = isSignedIn
         self.doubleTapRefreshRequest = doubleTapRefreshRequest
         self.isOperationallyVisible = isOperationallyVisible
-        self.notificationUnreadCount = notificationUnreadCount
+        self.onRecommendationSourceChange = onRecommendationSourceChange
         self.onOpenFeed = onOpenFeed
         self.onOpenPerson = onOpenPerson
         self.onOpenDaily = onOpenDaily
-        self.onOpenCreation = onOpenCreation
-        self.onOpenNotifications = onOpenNotifications
     }
 
     var body: some View {
@@ -101,14 +101,17 @@ struct HomeChannelsNativeView: View {
                 refreshPresentations.presentation(for: $0).statusText(
                     now: refreshStatusNow
                 )
+            },
+            onPrefetch: prefetchChannel,
+            headerAccessory: {
+                recommendationSourceAccessory
             }
         ) { channel in
             channelContent(channel)
         }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if isOperationallyVisible {
-                homeTopBar
-            }
+        .background {
+            NativeZhihuVisualStyle.backgroundColor
+                .ignoresSafeArea()
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
@@ -184,61 +187,27 @@ struct HomeChannelsNativeView: View {
         }
     }
 
-    private var homeTopBar: some View {
-        HStack(spacing: 10) {
-            Spacer(minLength: 0)
-            ForEach(HomeTopBarControl.visibleControls) { control in
-                homeTopBarButton(control)
-            }
-        }
-        .padding(.horizontal, 14)
-        .frame(height: NativeHomeHeaderLayoutPolicy.actionBarHeight)
-        .background(Color(uiColor: .systemBackground))
-        .zIndex(10)
-        .accessibilityIdentifier("home_top_bar")
+    private var selectedChannel: HomeChannel {
+        HomeChannel(rawValue: selectedChannelID) ?? .recommendation
     }
 
     @ViewBuilder
-    private func homeTopBarButton(_ control: HomeTopBarControl) -> some View {
-        switch control {
-        case .creation:
-            Button(action: onOpenCreation) {
-                Image(systemName: "square.and.pencil")
-                    .frame(width: 44, height: 44)
-                    .contentShape(Circle())
-            }
-            .background(Color.secondary.opacity(0.1), in: Circle())
-            .accessibilityLabel("创作")
-            .accessibilityIdentifier("home_creation_entry")
-
-        case .notifications:
-            let presentation = HomeNotificationIndicatorPresentation(
-                unreadCount: notificationUnreadCount
+    private var recommendationSourceAccessory: some View {
+        if HomeRecommendationSourceTogglePolicy.isVisible(
+            selectedChannel: selectedChannel
+        ) {
+            HomeRecommendationSourceToggle(
+                source: recommendationSource,
+                isSignedIn: isSignedIn,
+                onSwitch: switchRecommendationSource
             )
-            Button(action: onOpenNotifications) {
-                Image(systemName: "bell")
-                    .frame(width: 44, height: 44)
-                    .contentShape(Circle())
-                    .overlay(alignment: .topTrailing) {
-                        if presentation.showsDot {
-                            Circle()
-                                .fill(.red)
-                                .frame(width: 9, height: 9)
-                                .overlay(Circle().stroke(Color(uiColor: .systemBackground), lineWidth: 2))
-                                .offset(x: -5, y: 5)
-                                .accessibilityHidden(true)
-                        }
-                    }
-            }
-            .background(Color.secondary.opacity(0.1), in: Circle())
-            .accessibilityLabel(presentation.accessibilityLabel)
-            .accessibilityValue(presentation.accessibilityValue)
-            .accessibilityIdentifier("home_notifications_entry")
         }
     }
 
-    private var selectedChannel: HomeChannel {
-        HomeChannel(rawValue: selectedChannelID) ?? .recommendation
+    private func switchRecommendationSource(to source: HomeRecommendationSource) {
+        guard source != recommendationSource else { return }
+        scrollToTopRequests[.recommendation, default: 0] &+= 1
+        onRecommendationSourceChange(source)
     }
 
     private func collapseProgressBinding(for channel: HomeChannel) -> Binding<CGFloat> {
@@ -424,6 +393,23 @@ struct HomeChannelsNativeView: View {
         }
     }
 
+    private func prefetchChannel(_ channel: HomeChannel) {
+        guard isOperationallyVisible else { return }
+        Task { @MainActor in
+            guard isOperationallyVisible else { return }
+            switch channel {
+            case .recommendation:
+                await recommendationStore.loadInitialIfNeeded()
+            case .following:
+                await followingStore.loadMomentsIfNeeded()
+            case .hot:
+                await hotStore.loadInitialIfNeeded()
+            case .daily:
+                await dailyStore.loadInitialIfNeeded()
+            }
+        }
+    }
+
     private func successfulRefreshDate(for channel: HomeChannel) -> Date? {
         switch channel {
         case .recommendation: return recommendationStore.refreshMetadata.lastSuccessfulRefreshAt
@@ -468,27 +454,58 @@ struct HomeChannelsNativeView: View {
 
 }
 
-enum HomeTopBarControl: String, CaseIterable, Identifiable {
-    case creation
-    case notifications
+private struct HomeRecommendationSourceToggle: View {
+    let source: HomeRecommendationSource
+    let isSignedIn: Bool
+    let onSwitch: (HomeRecommendationSource) -> Void
 
-    var id: String { rawValue }
-    static let visibleControls: [HomeTopBarControl] = [.creation, .notifications]
-}
+    @Environment(\.nativeHapticFeedback) private var hapticFeedback
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-struct HomeNotificationIndicatorPresentation: Equatable {
-    let unreadCount: Int
+    var body: some View {
+        let presentation = HomeRecommendationSourceTogglePolicy.presentation(for: source)
+        let canSwitch = HomeRecommendationSourceTogglePolicy.canSwitch(
+            from: source,
+            isSignedIn: isSignedIn
+        )
 
-    init(unreadCount: Int) {
-        self.unreadCount = max(0, unreadCount)
-    }
+        Button {
+            guard canSwitch else { return }
+            hapticFeedback(.selection)
+            if reduceMotion {
+                onSwitch(HomeRecommendationSourceTogglePolicy.next(after: source))
+            } else {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    onSwitch(HomeRecommendationSourceTogglePolicy.next(after: source))
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(presentation.visibleLabel)
+                    .font(.system(size: 13, weight: .semibold))
 
-    var showsDot: Bool { unreadCount > 0 }
-    var accessibilityLabel: String {
-        unreadCount > 0 ? "通知，\(unreadCount) 条未读" : "通知"
-    }
-    var accessibilityValue: String {
-        unreadCount > 0 ? "\(unreadCount) 条未读" : "无未读通知"
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .frame(minWidth: 60, minHeight: 44)
+        .contentShape(Rectangle())
+        .disabled(!canSwitch)
+        .opacity(canSwitch ? 1 : 0.55)
+        .accessibilityLabel(HomeRecommendationSourceTogglePresentation.accessibilityLabel)
+        .accessibilityValue(presentation.accessibilityValue)
+        .accessibilityHint(HomeRecommendationSourceTogglePolicy.accessibilityHint(
+            for: source,
+            isSignedIn: isSignedIn
+        ))
+        .accessibilityIdentifier(
+            HomeRecommendationSourceTogglePresentation.accessibilityIdentifier
+        )
     }
 }
 

@@ -1,5 +1,63 @@
 import SwiftUI
 
+enum NativeZhihuVisualStyle {
+    static let backgroundColor = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? .secondarySystemBackground : .systemBackground
+    })
+    static let bottomBarColor = Color(uiColor: .secondarySystemBackground)
+    static let separatorColor = Color(uiColor: .separator).opacity(0.55)
+    static let titlePointSize: CGFloat = 18
+    static let summaryPointSize: CGFloat = 16
+    static let contentSpacing: CGFloat = 8
+}
+
+/// Keeps controls inside the device safe area while extending the bar's
+/// concrete background through the home-indicator region. This component is
+/// intended for use as the content of `safeAreaInset(edge: .bottom)`.
+enum NativeFullBleedBottomBarLayoutPolicy {
+    static let backgroundSafeAreaRegions: SafeAreaRegions = .container
+    static let backgroundEdges: Edge.Set = .bottom
+}
+
+struct NativeFullBleedBottomBar<Content: View>: View {
+    let backgroundColor: Color
+    let showsTopDivider: Bool
+    let bottomSafeAreaOverlap: CGFloat
+    let content: Content
+
+    init(
+        backgroundColor: Color = NativeZhihuVisualStyle.bottomBarColor,
+        showsTopDivider: Bool = true,
+        bottomSafeAreaOverlap: CGFloat = 0,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.backgroundColor = backgroundColor
+        self.showsTopDivider = showsTopDivider
+        self.bottomSafeAreaOverlap = max(0, bottomSafeAreaOverlap)
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if showsTopDivider { Divider() }
+            content
+        }
+        .frame(maxWidth: .infinity)
+        .background {
+            backgroundColor
+                .ignoresSafeArea(
+                    NativeFullBleedBottomBarLayoutPolicy.backgroundSafeAreaRegions,
+                    edges: NativeFullBleedBottomBarLayoutPolicy.backgroundEdges
+                )
+        }
+        // A negative outer inset lets compact controls use a small, explicit
+        // portion of the home-indicator safe area while the background remains
+        // full bleed. Callers keep the default zero overlap unless they can
+        // measure the device's actual bottom safe-area inset.
+        .padding(.bottom, -bottomSafeAreaOverlap)
+    }
+}
+
 enum FeedItemTitleDisplayMode: Equatable {
     case compact
     case full
@@ -20,7 +78,8 @@ struct FeedItemRow: View {
     @EnvironmentObject private var questionAuthorBlocklist: QuestionAuthorBlocklistStore
     @Environment(\.nativeContentPresentation) private var presentation
     @Environment(\.nativeHapticFeedback) private var hapticFeedback
-    @ScaledMetric(relativeTo: .subheadline) private var summaryPointSize: CGFloat = 15
+    @ScaledMetric(relativeTo: .headline) private var titlePointSize = NativeZhihuVisualStyle.titlePointSize
+    @ScaledMetric(relativeTo: .body) private var summaryPointSize = NativeZhihuVisualStyle.summaryPointSize
     @ScaledMetric(relativeTo: .body) private var wideThumbnailHeight: CGFloat = 96
 
     init(
@@ -48,21 +107,35 @@ struct FeedItemRow: View {
         Button {
             onOpen(item.route)
         } label: {
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: NativeZhihuVisualStyle.contentSpacing) {
+                if let sourceLabel = normalizedSourceLabel {
+                    Text(sourceLabel)
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+
                 HStack(alignment: .top, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: 7) {
                         Text(item.title)
-                            .font(.headline)
+                            .font(.system(size: titlePointSize, weight: .semibold))
                             .foregroundStyle(.primary)
+                            .lineSpacing(3)
                             .lineLimit(titleDisplayMode.lineLimit)
                             .fixedSize(horizontal: false, vertical: true)
+
+                        if let author = item.author {
+                            FeedItemAuthorLabel(author: author)
+                        }
 
                         if let summary = item.summary, !summary.isEmpty {
                             let renderedPointSize = summaryPointSize * presentation.fontScale
                             Text(summary)
                                 .font(.system(size: renderedPointSize))
                                 .foregroundStyle(.secondary)
-                                .lineSpacing(presentation.extraLineSpacing(for: renderedPointSize) * 0.45)
+                                .lineSpacing(
+                                    3 + presentation.extraLineSpacing(for: renderedPointSize) * 0.45
+                                )
                                 .lineLimit(presentation.feedExcerptLines)
                         }
                     }
@@ -98,12 +171,19 @@ struct FeedItemRow: View {
                     FeedMediaPreview(media: item.media)
                 }
 
-                FeedItemMetadataRow(item: item)
+                FeedItemEngagementRow(kind: item.kind, details: item.details)
             }
             .contentShape(Rectangle())
             .padding(.vertical, presentation.feedDensity.rowVerticalPadding)
         }
         .buttonStyle(.plain)
+    }
+
+    private var normalizedSourceLabel: String? {
+        guard let sourceLabel = item.sourceLabel?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ), !sourceLabel.isEmpty else { return nil }
+        return sourceLabel
     }
 
     private var thumbnailPlacement: FeedThumbnailPlacement {
@@ -156,20 +236,34 @@ private extension FeedThumbnailCropAnchor {
 }
 
 struct FeedItemMetadataFormatter {
+    struct Metric: Equatable, Identifiable {
+        let name: String
+        let countText: String
+        let systemImage: String
+
+        var id: String { name }
+        var displayText: String {
+            let separator = countText.hasSuffix("万") || countText.hasSuffix("亿") ? "" : " "
+            return "\(countText)\(separator)\(name)"
+        }
+    }
+
     static func displayText(kind: FeedItemKind, details: String) -> String {
-        metricTexts(kind: kind, details: details).joined(separator: " · ")
+        metrics(kind: kind, details: details)
+            .map(\.displayText)
+            .joined(separator: " · ")
     }
 
     static func metricsText(kind: FeedItemKind, details: String) -> String {
-        metricTexts(kind: kind, details: details).joined(separator: " · ")
+        displayText(kind: kind, details: details)
     }
 
-    private static func metricTexts(kind: FeedItemKind, details: String) -> [String] {
+    static func metrics(kind: FeedItemKind, details: String) -> [Metric] {
         details
             .components(separatedBy: " · ")
             .compactMap(metric)
             .filter { allowedMetricNames(for: kind).contains($0.name) }
-            .map { formattedMetric(count: $0.count, name: $0.name) }
+            .map { metricPresentation(count: $0.count, name: $0.name) }
     }
 
     private static func metric(_ rawValue: String) -> (count: Int64, name: String)? {
@@ -195,10 +289,21 @@ struct FeedItemMetadataFormatter {
         }
     }
 
-    private static func formattedMetric(count: Int64, name: String) -> String {
-        let number = compactNumber(count)
-        let separator = number.hasSuffix("万") || number.hasSuffix("亿") ? "" : " "
-        return "\(number)\(separator)\(name)"
+    private static func metricPresentation(count: Int64, name: String) -> Metric {
+        Metric(
+            name: name,
+            countText: compactNumber(count),
+            systemImage: systemImage(for: name)
+        )
+    }
+
+    private static func systemImage(for name: String) -> String {
+        switch name {
+        case "赞同", "赞": return "arrowtriangle.up"
+        case "关注": return "star"
+        case "评论", "回答": return "bubble.left"
+        default: return "circle"
+        }
     }
 
     private static func compactNumber(_ count: Int64) -> String {
@@ -226,40 +331,35 @@ struct FeedItemMetadataFormatter {
     }
 }
 
-private struct FeedItemMetadataRow: View {
-    let item: FeedItemDTO
+private struct FeedItemEngagementRow: View {
+    let kind: FeedItemKind
+    let details: String
 
-    var body: some View {
-        HStack(spacing: 6) {
-            if let author = item.author {
-                FeedItemAuthorLabel(author: author)
-            }
-
-            let metrics = FeedItemMetadataFormatter.metricsText(
-                kind: item.kind,
-                details: item.details
-            )
-            if !metrics.isEmpty {
-                if item.author != nil {
-                    metadataSeparator
-                }
-                Text(metrics)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .accessibilityElement(children: .combine)
+    private var metrics: [FeedItemMetadataFormatter.Metric] {
+        FeedItemMetadataFormatter.metrics(kind: kind, details: details)
     }
 
-    private var metadataSeparator: some View {
-        Text("·")
-            .font(.caption)
-            .foregroundStyle(.tertiary)
+    @ViewBuilder
+    var body: some View {
+        if !metrics.isEmpty {
+            HStack(spacing: 26) {
+                ForEach(metrics) { metric in
+                    HStack(spacing: 7) {
+                        Image(systemName: metric.systemImage)
+                            .frame(width: 20)
+                        Text(metric.countText)
+                            .monospacedDigit()
+                    }
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(metric.displayText)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 1)
+        }
     }
 }
 
@@ -285,7 +385,7 @@ private struct FeedItemAuthorLabel: View {
             .clipShape(Circle())
 
             Text(author.displayName)
-                .font(.caption)
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)

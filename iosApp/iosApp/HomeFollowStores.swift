@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 private extension HomeRecommendationRefreshIntent {
@@ -158,7 +159,7 @@ struct HomeRecommendationCacheSnapshot: Codable, Equatable, Sendable {
     let savedAt: Date
 }
 
-protocol HomeRecommendationCachePersisting {
+protocol HomeRecommendationCachePersisting: Sendable {
     func load(for context: HomeRecommendationCacheContext) -> HomeRecommendationCacheSnapshot?
     func save(
         _ snapshot: HomeRecommendationCacheSnapshot,
@@ -166,7 +167,10 @@ protocol HomeRecommendationCachePersisting {
     )
 }
 
-struct UserDefaultsHomeRecommendationCachePersistence: HomeRecommendationCachePersisting {
+struct UserDefaultsHomeRecommendationCachePersistence:
+    HomeRecommendationCachePersisting,
+    @unchecked Sendable
+{
     static let keyPrefix = "homeRecommendationCache"
 
     let defaults: UserDefaults
@@ -238,6 +242,184 @@ struct UserDefaultsHomeRecommendationCachePersistence: HomeRecommendationCachePe
     }
 }
 
+struct FileHomeRecommendationCachePolicy {
+    static let maximumItemCount = 60
+    static let maximumAge: TimeInterval = 7 * 24 * 60 * 60
+
+    static func isFresh(savedAt: Date, now: Date) -> Bool {
+        let age = now.timeIntervalSince(savedAt)
+        return age >= 0 && age <= maximumAge
+    }
+
+    static func snapshotForStorage(
+        _ snapshot: HomeRecommendationCacheSnapshot,
+        context: HomeRecommendationCacheContext,
+        expectedSchemaVersion: Int
+    ) -> HomeRecommendationCacheSnapshot? {
+        guard snapshot.schemaVersion == expectedSchemaVersion,
+              snapshot.accountID == context.accountID,
+              snapshot.source == context.source,
+              !snapshot.items.isEmpty
+        else { return nil }
+
+        let trustedNextURL: URL?
+        do {
+            trustedNextURL = try ZhihuAPIURLPolicy.validatedPagingURL(snapshot.nextURL)
+        } catch {
+            return nil
+        }
+        let wasTruncated = snapshot.items.count > maximumItemCount
+        let storedNextURL = wasTruncated ? nil : trustedNextURL
+        return HomeRecommendationCacheSnapshot(
+            schemaVersion: snapshot.schemaVersion,
+            accountID: snapshot.accountID,
+            source: snapshot.source,
+            items: Array(snapshot.items.prefix(maximumItemCount)),
+            nextURL: storedNextURL,
+            isEnd: snapshot.isEnd || storedNextURL == nil,
+            refreshMetadata: snapshot.refreshMetadata,
+            savedAt: snapshot.savedAt
+        )
+    }
+}
+
+/// A bounded, per-account cache for already-normalized feed DTOs. The memory
+/// copy makes repeated restores cheap; JSON encoding and atomic file writes are
+/// serialized away from the main actor so refresh completion never waits on I/O.
+final class FileHomeRecommendationCachePersistence:
+    HomeRecommendationCachePersisting,
+    @unchecked Sendable
+{
+    private let directory: URL
+    private let expectedSchemaVersion: Int
+    private let now: @Sendable () -> Date
+    private let diagnostics: PerformanceDiagnosticsClient
+    private let fileManager: FileManager
+    private let writerQueue = DispatchQueue(
+        label: "com.github.zly2006.zhplus.home-recommendation-cache",
+        qos: .utility
+    )
+    private let lock = NSLock()
+    private var memory: [HomeRecommendationCacheContext: HomeRecommendationCacheSnapshot] = [:]
+
+    init(
+        directory: URL? = nil,
+        expectedSchemaVersion: Int = HomeRecommendationCacheSnapshot.currentSchemaVersion,
+        now: @escaping @Sendable () -> Date = Date.init,
+        diagnostics: PerformanceDiagnosticsClient = .disabled,
+        fileManager: FileManager = .default
+    ) {
+        self.directory = directory ?? fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0].appendingPathComponent("HomeRecommendationCache", isDirectory: true)
+        self.expectedSchemaVersion = expectedSchemaVersion
+        self.now = now
+        self.diagnostics = diagnostics
+        self.fileManager = fileManager
+    }
+
+    func load(for context: HomeRecommendationCacheContext) -> HomeRecommendationCacheSnapshot? {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        if let cached = lock.withLock({ memory[context] }) {
+            if FileHomeRecommendationCachePolicy.isFresh(savedAt: cached.savedAt, now: now()) {
+                recordLoad(startedAt: startedAt, snapshot: cached, source: "memory")
+                return cached
+            }
+            lock.withLock { memory.removeValue(forKey: context) }
+        }
+
+        guard let data = try? Data(contentsOf: fileURL(for: context)),
+              let decoded = try? JSONDecoder().decode(HomeRecommendationCacheSnapshot.self, from: data),
+              FileHomeRecommendationCachePolicy.isFresh(savedAt: decoded.savedAt, now: now()),
+              let snapshot = FileHomeRecommendationCachePolicy.snapshotForStorage(
+                  decoded,
+                  context: context,
+                  expectedSchemaVersion: expectedSchemaVersion
+              )
+        else {
+            recordLoad(startedAt: startedAt, snapshot: nil, source: "miss")
+            return nil
+        }
+        lock.withLock { memory[context] = snapshot }
+        recordLoad(startedAt: startedAt, snapshot: snapshot, source: "disk")
+        return snapshot
+    }
+
+    func save(
+        _ snapshot: HomeRecommendationCacheSnapshot,
+        for context: HomeRecommendationCacheContext
+    ) {
+        guard let bounded = FileHomeRecommendationCachePolicy.snapshotForStorage(
+            snapshot,
+            context: context,
+            expectedSchemaVersion: expectedSchemaVersion
+        ) else { return }
+        lock.withLock { memory[context] = bounded }
+        let directory = directory
+        let fileURL = fileURL(for: context)
+        let fileManager = fileManager
+        let diagnostics = diagnostics
+        writerQueue.async {
+            let startedAt = ProcessInfo.processInfo.systemUptime
+            do {
+                try fileManager.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true
+                )
+                let data = try JSONEncoder().encode(bounded)
+                try data.write(to: fileURL, options: .atomic)
+                try? fileManager.setAttributes(
+                    [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                    ofItemAtPath: fileURL.path
+                )
+                diagnostics.record(.init(
+                    durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                    category: "recommendation_cache",
+                    operation: "write",
+                    result: .success,
+                    responseBytes: data.count,
+                    itemCount: bounded.items.count,
+                    cacheSource: "disk"
+                ))
+            } catch {
+                diagnostics.record(.init(
+                    durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                    category: "recommendation_cache",
+                    operation: "write",
+                    result: .failure,
+                    itemCount: bounded.items.count,
+                    cacheSource: "disk",
+                    errorKind: PerformanceDiagnosticEvent.sanitizedErrorKind(error)
+                ))
+            }
+        }
+    }
+
+    private func fileURL(for context: HomeRecommendationCacheContext) -> URL {
+        let identity = "\(context.accountID)|\(context.source.rawValue)"
+        let digest = SHA256.hash(data: Data(identity.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return directory.appendingPathComponent("\(digest).json", isDirectory: false)
+    }
+
+    private func recordLoad(
+        startedAt: TimeInterval,
+        snapshot: HomeRecommendationCacheSnapshot?,
+        source: String
+    ) {
+        diagnostics.record(.init(
+            durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+            category: "recommendation_cache",
+            operation: "read",
+            result: .success,
+            itemCount: snapshot?.items.count ?? 0,
+            cacheSource: source
+        ))
+    }
+}
+
 @MainActor
 final class HomeFeedNativeStore: ObservableObject {
     @Published private(set) var items: [FeedItemDTO] = []
@@ -252,6 +434,9 @@ final class HomeFeedNativeStore: ObservableObject {
     private let configuration: @MainActor () -> HomeRecommendationRefreshConfiguration
     private let cacheAccountID: @MainActor () -> String?
     private let cachePersistence: HomeRecommendationCachePersisting
+    private let automaticallyPrefetchesFirstContinuation: Bool
+    private let firstContinuationPrefetchDelayNanoseconds: UInt64
+    private let thumbnailPrefetcher: FeedThumbnailPrefetching
     private let diagnostics: PerformanceDiagnosticsClient
     private let now: () -> Date
     private var nextURL: URL?
@@ -262,10 +447,11 @@ final class HomeFeedNativeStore: ObservableObject {
     private var generation: UInt64 = 0
     private var activeRefreshTask: Task<HomeRecommendationRefreshOutcome, Never>?
     private var activeRefreshGeneration: UInt64?
+    private var firstContinuationPrefetchTask: Task<Void, Never>?
 
-    private static let maximumRefreshRequests = 6
     private static let maximumConsecutivePagesWithoutNewItems = 2
     private static let refreshTimeout: TimeInterval = 15
+    private static let paginationPrefetchDistance = 5
 
     init(
         repository: HomeFeedRepository,
@@ -276,6 +462,9 @@ final class HomeFeedNativeStore: ObservableObject {
         cachePersistence: HomeRecommendationCachePersisting = UserDefaultsHomeRecommendationCachePersistence(),
         cacheAccountID: @escaping @MainActor () -> String? = { nil },
         refreshPolicy: FeedChannelRefreshPolicy = .oneHour,
+        automaticallyPrefetchesFirstContinuation: Bool = false,
+        firstContinuationPrefetchDelayNanoseconds: UInt64 = 150_000_000,
+        thumbnailPrefetcher: FeedThumbnailPrefetching = DisabledFeedThumbnailPrefetcher(),
         now: @escaping () -> Date = Date.init,
         diagnostics: PerformanceDiagnosticsClient = .disabled
     ) {
@@ -283,6 +472,9 @@ final class HomeFeedNativeStore: ObservableObject {
         self.configuration = configuration
         self.cachePersistence = cachePersistence
         self.cacheAccountID = cacheAccountID
+        self.automaticallyPrefetchesFirstContinuation = automaticallyPrefetchesFirstContinuation
+        self.firstContinuationPrefetchDelayNanoseconds = firstContinuationPrefetchDelayNanoseconds
+        self.thumbnailPrefetcher = thumbnailPrefetcher
         self.now = now
         self.diagnostics = diagnostics
         let refreshTracker = FeedChannelRefreshTracker(
@@ -293,7 +485,6 @@ final class HomeFeedNativeStore: ObservableObject {
         )
         self.refreshTracker = refreshTracker
         refreshMetadata = refreshTracker.load()
-        _ = restoreCachedSnapshotForCurrentContext()
     }
 
     var canLoadMore: Bool { hasLoaded && !isEnd && nextURL != nil && !isLoading }
@@ -302,11 +493,13 @@ final class HomeFeedNativeStore: ObservableObject {
 
     func loadInitialIfNeeded() async {
         if !hasLoaded {
-            _ = restoreCachedSnapshotForCurrentContext()
+            _ = await restoreCachedSnapshotForCurrentContext()
         }
         if hasLoaded {
             if needsRefreshAfterIdle() {
                 _ = await refresh(intent: .automatic)
+            } else {
+                scheduleFirstContinuationPrefetch()
             }
             return
         }
@@ -328,14 +521,22 @@ final class HomeFeedNativeStore: ObservableObject {
             return .ignored
         }
 
-        return await startRefreshLoop(intent: intent)
+        let outcome = await startRefreshLoop(intent: intent)
+        if outcome == .published || outcome == .publishedPartially {
+            scheduleFirstContinuationPrefetch()
+        }
+        return outcome
     }
 
     func recommendationSourceDidChange() async {
+        guard !Task.isCancelled else { return }
         let source = configuration().source
         guard loadedSource != source || isLoading else { return }
         resetForCacheContextChange()
-        if restoreCachedSnapshotForCurrentContext(), !needsRefreshAfterIdle() {
+        let restoredCachedSnapshot = await restoreCachedSnapshotForCurrentContext()
+        guard !Task.isCancelled, configuration().source == source else { return }
+        if restoredCachedSnapshot, !needsRefreshAfterIdle() {
+            scheduleFirstContinuationPrefetch()
             return
         }
         _ = await refresh(intent: .sourceChanged)
@@ -343,7 +544,6 @@ final class HomeFeedNativeStore: ObservableObject {
 
     func accountDidChange() {
         resetForCacheContextChange()
-        _ = restoreCachedSnapshotForCurrentContext()
     }
 
     func recordLastViewed() {
@@ -375,6 +575,7 @@ final class HomeFeedNativeStore: ObservableObject {
             let page = try await repository.fetchPage(source: source, after: requestedURL)
             guard currentGeneration == generation else { return }
             appendUnique(page.items)
+            prefetchThumbnails(in: page.items)
             nextURL = page.nextURL
             isEnd = page.isEnd
             failedOperation = nil
@@ -418,6 +619,15 @@ final class HomeFeedNativeStore: ObservableObject {
         if currentGeneration == generation { isLoading = false }
     }
 
+    func prefetchNextPageIfNeeded(after itemID: FeedItemID) async {
+        guard hasNextPage,
+              let itemIndex = items.firstIndex(where: { $0.id == itemID })
+        else { return }
+        let remainingItemCount = items.distance(from: itemIndex, to: items.endIndex)
+        guard remainingItemCount <= Self.paginationPrefetchDistance else { return }
+        await loadMore()
+    }
+
     func retry() async {
         if failedOperation == .nextPage {
             await loadMore()
@@ -442,6 +652,7 @@ final class HomeFeedNativeStore: ObservableObject {
             let page = try await repository.fetchPage(source: source, after: nil)
             guard currentGeneration == generation else { return }
             items = page.items
+            prefetchThumbnails(in: page.items)
             nextURL = page.nextURL
             isEnd = page.isEnd
             hasLoaded = true
@@ -462,12 +673,14 @@ final class HomeFeedNativeStore: ObservableObject {
         if currentGeneration == generation {
             isLoading = false
             isRefreshing = false
+            scheduleFirstContinuationPrefetch()
         }
     }
 
     private func startRefreshLoop(
         intent: HomeRecommendationRefreshIntent
     ) async -> HomeRecommendationRefreshOutcome {
+        cancelFirstContinuationPrefetch()
         generation &+= 1
         let refreshGeneration = generation
         let refreshConfiguration = configuration()
@@ -523,7 +736,9 @@ final class HomeFeedNativeStore: ObservableObject {
         var publishedFirstBatch = false
 
         do {
-            for _ in 0..<Self.maximumRefreshRequests {
+            for _ in 0..<HomeRecommendationRefreshExecutionPolicy.maximumRequests(
+                for: intent
+            ) {
                 try Task.checkCancellation()
                 guard refreshGeneration == generation else { return .cancelled }
                 if let requestedPageURL,
@@ -546,6 +761,7 @@ final class HomeFeedNativeStore: ObservableObject {
                     consecutivePagesWithoutNewItems = 0
                     accumulatedItems.append(contentsOf: newItems)
                     items = accumulatedItems
+                    prefetchThumbnails(in: newItems)
                     loadedSource = refreshConfiguration.source
 
                     if !publishedFirstBatch {
@@ -635,6 +851,7 @@ final class HomeFeedNativeStore: ObservableObject {
     }
 
     private func resetForCacheContextChange() {
+        cancelFirstContinuationPrefetch()
         cancelActiveRefresh()
         items = []
         nextURL = nil
@@ -647,10 +864,13 @@ final class HomeFeedNativeStore: ObservableObject {
     }
 
     @discardableResult
-    private func restoreCachedSnapshotForCurrentContext() -> Bool {
-        guard let context = currentCacheContext(),
-              let snapshot = cachePersistence.load(for: context)
-        else { return false }
+    private func restoreCachedSnapshotForCurrentContext() async -> Bool {
+        guard let context = currentCacheContext() else { return false }
+        let persistence = cachePersistence
+        let snapshot = await Task.detached(priority: .userInitiated) {
+            persistence.load(for: context)
+        }.value
+        guard context == currentCacheContext(), let snapshot else { return false }
         items = snapshot.items
         nextURL = snapshot.nextURL
         isEnd = snapshot.isEnd
@@ -694,6 +914,49 @@ final class HomeFeedNativeStore: ObservableObject {
         items.append(contentsOf: incoming.filter { known.insert($0.id).inserted })
     }
 
+    private func scheduleFirstContinuationPrefetch() {
+        guard automaticallyPrefetchesFirstContinuation,
+              firstContinuationPrefetchTask == nil,
+              hasNextPage
+        else { return }
+        let scheduledGeneration = generation
+        firstContinuationPrefetchTask = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.generation == scheduledGeneration {
+                    self.firstContinuationPrefetchTask = nil
+                }
+            }
+            do {
+                // Let the first-page List update and refresh-control dismissal
+                // commit before beginning continuation work.
+                try await Task.sleep(
+                    nanoseconds: self?.firstContinuationPrefetchDelayNanoseconds ?? 0
+                )
+            } catch {
+                return
+            }
+            guard let self,
+                  self.generation == scheduledGeneration,
+                  !self.isRefreshing,
+                  self.hasNextPage
+            else { return }
+            await self.loadMore()
+        }
+    }
+
+    private func cancelFirstContinuationPrefetch() {
+        firstContinuationPrefetchTask?.cancel()
+        firstContinuationPrefetchTask = nil
+    }
+
+    private func prefetchThumbnails(in items: [FeedItemDTO]) {
+        guard !items.isEmpty else { return }
+        let thumbnailPrefetcher = thumbnailPrefetcher
+        Task(priority: .utility) {
+            await thumbnailPrefetcher.prefetch(items: items)
+        }
+    }
+
     private enum FailedOperation {
         case initial
         case nextPage
@@ -703,6 +966,14 @@ final class HomeFeedNativeStore: ObservableObject {
         case timedOut
 
         var errorDescription: String? { "刷新超时，请稍后重试" }
+    }
+}
+
+struct HomeRecommendationRefreshExecutionPolicy {
+    static let maximumExtendedRequests = 6
+
+    static func maximumRequests(for intent: HomeRecommendationRefreshIntent) -> Int {
+        intent == .pull ? 1 : maximumExtendedRequests
     }
 }
 

@@ -2,13 +2,19 @@ import SwiftUI
 import UIKit
 
 /// A top channel selector whose stable channel views move as one horizontal page strip.
-struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: View>: View {
+struct NativeChannelSwitcher<
+    Channel: Identifiable & Hashable,
+    HeaderAccessory: View,
+    ChannelContent: View
+>: View {
     let channels: [Channel]
     @Binding var selection: Channel.ID
     let isEnabled: Bool
 
     private let title: (Channel) -> String
     private let status: (Channel) -> String?
+    private let onPrefetch: (Channel) -> Void
+    private let headerAccessory: HeaderAccessory
     private let content: (Channel) -> ChannelContent
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -16,6 +22,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
     @Namespace private var swipeCoordinateSpace
     @State private var dragTranslation: CGFloat = 0
     @State private var swipeExclusionFrames: [CGRect] = []
+    @State private var didPrefetchDuringCurrentSwipe = false
 
     init(
         channels: [Channel],
@@ -23,6 +30,8 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
         isEnabled: Bool = true,
         title: @escaping (Channel) -> String,
         status: @escaping (Channel) -> String? = { _ in nil },
+        onPrefetch: @escaping (Channel) -> Void = { _ in },
+        @ViewBuilder headerAccessory: () -> HeaderAccessory,
         @ViewBuilder content: @escaping (Channel) -> ChannelContent
     ) {
         self.channels = channels
@@ -30,6 +39,8 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
         self.isEnabled = isEnabled
         self.title = title
         self.status = status
+        self.onPrefetch = onPrefetch
+        self.headerAccessory = headerAccessory()
         self.content = content
     }
 
@@ -63,23 +74,39 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
         .onChange(of: reduceMotion) { shouldReduceMotion in
             if shouldReduceMotion { dragTranslation = 0 }
         }
-        .onDisappear { dragTranslation = 0 }
+        .onChange(of: selection) { _ in
+            didPrefetchDuringCurrentSwipe = false
+        }
+        .onChange(of: isEnabled) { enabled in
+            if !enabled { resetChannelSwipe() }
+        }
+        .onDisappear { resetChannelSwipe() }
     }
 
     private var fixedHeader: some View {
-        NativeChannelSelector(
-            channels: channels,
-            selection: $selection,
-            title: title,
-            status: status
-        )
-        .background(Color(uiColor: .systemBackground))
+        ZStack(alignment: .trailing) {
+            NativeChannelSelector(
+                channels: channels,
+                selection: $selection,
+                title: title,
+                status: status
+            )
+
+            headerAccessory
+                .padding(.trailing, 8)
+                .nativeChannelSwipeExclusion()
+        }
+        .background(NativeZhihuVisualStyle.backgroundColor)
         .frame(
             height: NativeHomeHeaderLayoutPolicy.expandedHeaderHeight,
             alignment: .top
         )
         .clipped()
-        .overlay(alignment: .bottom) { Divider() }
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(NativeZhihuVisualStyle.separatorColor)
+                .frame(height: 0.5)
+        }
         .allowsHitTesting(isEnabled)
         .environment(\.nativeChannelIsActive, isEnabled)
         .accessibilityHidden(!isEnabled)
@@ -123,6 +150,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
             channelCount: channels.count,
             containerWidth: containerWidth
         )
+        prefetchAdjacentChannelIfNeeded()
     }
 
     private func cancelChannelSwipe() {
@@ -133,6 +161,7 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
                 dragTranslation = 0
             }
         }
+        didPrefetchDuringCurrentSwipe = false
     }
 
     private func commitChannelSwipe(
@@ -162,6 +191,24 @@ struct NativeChannelSwitcher<Channel: Identifiable & Hashable, ChannelContent: V
             }
         }
         if targetIndex != currentIndex { hapticFeedback(.commit) }
+        didPrefetchDuringCurrentSwipe = false
+    }
+
+    private func prefetchAdjacentChannelIfNeeded() {
+        guard !didPrefetchDuringCurrentSwipe,
+              let targetIndex = NativeChannelPrefetchPolicy.targetIndex(
+                currentIndex: selectedChannelIndex,
+                channelCount: channels.count,
+                translation: dragTranslation
+              )
+        else { return }
+        didPrefetchDuringCurrentSwipe = true
+        onPrefetch(channels[targetIndex])
+    }
+
+    private func resetChannelSwipe() {
+        dragTranslation = 0
+        didPrefetchDuringCurrentSwipe = false
     }
 }
 
@@ -199,6 +246,26 @@ struct NativeChannelPageTransitionPolicy {
         if currentIndex == 0, rawTranslation > 0 { return 0 }
         if currentIndex == channelCount - 1, rawTranslation < 0 { return 0 }
         return min(max(rawTranslation, -containerWidth), containerWidth)
+    }
+}
+
+struct NativeChannelPrefetchPolicy {
+    static let minimumTranslation: CGFloat = 12
+
+    static func targetIndex(
+        currentIndex: Int,
+        channelCount: Int,
+        translation: CGFloat
+    ) -> Int? {
+        guard channelCount > 0,
+              currentIndex >= 0,
+              currentIndex < channelCount,
+              abs(translation) >= minimumTranslation,
+              translation != 0
+        else { return nil }
+
+        let targetIndex = translation > 0 ? currentIndex - 1 : currentIndex + 1
+        return (0..<channelCount).contains(targetIndex) ? targetIndex : nil
     }
 }
 
@@ -459,7 +526,7 @@ private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
     }
 
     private var channelButtons: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 4) {
             ForEach(Array(channels.enumerated()), id: \.element.id) { index, channel in
                 let isSelected = channel.id == selection
                 Button {
@@ -479,14 +546,16 @@ private struct NativeChannelSelector<Channel: Identifiable & Hashable>: View {
                                 size: 17,
                                 weight: isSelected ? .semibold : .regular
                             ))
-                            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                            .foregroundStyle(
+                                isSelected ? Color.primary : Color.primary.opacity(0.88)
+                            )
                             .fixedSize()
 
                         Capsule()
-                            .fill(isSelected ? Color.accentColor : Color.clear)
-                            .frame(width: 24, height: 3)
+                            .fill(isSelected ? Color.primary : Color.clear)
+                            .frame(width: 26, height: 4)
                     }
-                    .frame(minWidth: 58, minHeight: 44)
+                    .frame(minWidth: 54, minHeight: 44)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -631,7 +700,6 @@ struct NativeChannelSwipePolicy {
 
 private enum NativeChannelSwitcherTuning {
     // Gesture recognition and commit thresholds reuse the media gallery's existing policy.
-    static let minimumDragDistance: CGFloat = 12
     static let horizontalIntentRatio: CGFloat = 1.15
     static let distanceThresholdRatio: CGFloat = 0.18
     static let projectedDistanceMultiplier: CGFloat = 1.35

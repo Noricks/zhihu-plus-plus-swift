@@ -7,6 +7,33 @@ extension Error {
         let error = self as NSError
         return error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled
     }
+
+    var isNativeConnectivityFailure: Bool {
+        guard !isNativeRequestCancellation else { return false }
+        let code: URLError.Code
+        if let error = self as? URLError {
+            code = error.code
+        } else {
+            let error = self as NSError
+            guard error.domain == NSURLErrorDomain else { return false }
+            code = URLError.Code(rawValue: error.code)
+        }
+        switch code {
+        case .timedOut,
+             .cannotFindHost,
+             .cannotConnectToHost,
+             .networkConnectionLost,
+             .dnsLookupFailed,
+             .notConnectedToInternet,
+             .internationalRoamingOff,
+             .callIsActive,
+             .dataNotAllowed,
+             .cannotLoadFromNetwork:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 enum ZhihuRequestAuthentication: Sendable {
@@ -18,10 +45,13 @@ enum ZhihuRequestAuthentication: Sendable {
 enum ZhihuAPIError: LocalizedError, Equatable {
     case untrustedURL
     case accountUnavailable
+    case accountChanged
     case authenticationRequired
     case invalidResponse
     case httpStatus(Int)
     case malformedPayload
+    case cachedResponseUnavailable
+    case cacheWriteFailed
 
     var errorDescription: String? {
         switch self {
@@ -29,6 +59,8 @@ enum ZhihuAPIError: LocalizedError, Equatable {
             return "请求地址不受信任"
         case .accountUnavailable:
             return "账号信息读取失败，请重新登录后重试"
+        case .accountChanged:
+            return "当前账号已变化，请重新操作"
         case .authenticationRequired:
             return "请登录或重新登录后重试"
         case .invalidResponse:
@@ -37,6 +69,10 @@ enum ZhihuAPIError: LocalizedError, Equatable {
             return "请求失败（HTTP \(status)）"
         case .malformedPayload:
             return "内容格式无法识别"
+        case .cachedResponseUnavailable:
+            return "这项内容尚未准备到离线缓存中"
+        case .cacheWriteFailed:
+            return "离线内容写入失败，请检查可用存储空间后重试"
         }
     }
 }
@@ -113,17 +149,20 @@ actor ZhihuAPIClient {
     private let session: URLSession
     private let signer: ZhihuRequestSigning
     private let diagnostics: PerformanceDiagnosticsClient
+    private let responseCache: any ZhihuAPIResponseCaching
 
     init(
         accountStore: AccountJSONStore,
         session: URLSession? = nil,
         signer: ZhihuRequestSigning = ZhihuRequestSigner(),
-        diagnostics: PerformanceDiagnosticsClient = .disabled
+        diagnostics: PerformanceDiagnosticsClient = .disabled,
+        responseCache: any ZhihuAPIResponseCaching = FileZhihuAPIResponseCache()
     ) {
         self.accountStore = accountStore
         self.session = session ?? Self.makeSession()
         self.signer = signer
         self.diagnostics = diagnostics
+        self.responseCache = responseCache
     }
 
     func data(
@@ -131,16 +170,74 @@ actor ZhihuAPIClient {
         method: String = "GET",
         body: Data? = nil,
         additionalHeaders: [String: String] = [:],
-        authentication: ZhihuRequestAuthentication = .accountIfAvailable
+        authentication: ZhihuRequestAuthentication = .accountIfAvailable,
+        cachePolicy: ZhihuAPICachePolicy = .disabled,
+        cacheValidation: (@Sendable (Data) throws -> Void)? = nil,
+        expectedAccountID: String? = nil
     ) async throws -> Data {
         let startedAt = ProcessInfo.processInfo.systemUptime
         let endpoint = PerformanceDiagnosticEndpoint(url: url)
         var statusCode: Int?
+        var cacheRequest: ZhihuAPIResponseCacheRequest?
+        var cacheGeneration: UInt64?
+        var accountSnapshot = RequestAccountSnapshot.untracked
         do {
             guard ZhihuAPIURLPolicy.allowsAPIRequest(url) else { throw ZhihuAPIError.untrustedURL }
-            let credentials = try credentials(authentication: authentication)
+            let normalizedMethod = method.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            accountSnapshot = try requestAccountSnapshot(authentication: authentication)
+            try validateExpectedAccountID(
+                expectedAccountID,
+                accountSnapshot: accountSnapshot
+            )
+            let credentials = try credentials(
+                authentication: authentication,
+                accountSnapshot: accountSnapshot
+            )
+            try validateAccountSnapshot(accountSnapshot)
+            cacheRequest = makeCacheRequest(
+                policy: cachePolicy,
+                method: normalizedMethod,
+                url: url,
+                accountSnapshot: accountSnapshot
+            )
+            if let cacheRequest {
+                cacheGeneration = await responseCache.generation(
+                    forAccountID: cacheRequest.accountID
+                )
+                try validateAccountSnapshot(accountSnapshot)
+            }
+            try Task.checkCancellation()
+            if case .offlinePackWarm = cachePolicy, cacheRequest == nil {
+                throw ZhihuAPIError.cacheWriteFailed
+            }
+            switch cachePolicy {
+            case .cacheFirst, .cacheOnly:
+                if let cacheRequest,
+                   let cached = await validatedCachedResponse(
+                       for: cacheRequest,
+                       validation: cacheValidation
+                   ) {
+                    try Task.checkCancellation()
+                    try validateAccountSnapshot(accountSnapshot)
+                    diagnostics.record(.init(
+                        durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                        category: "network",
+                        operation: "zhihu_api_request",
+                        result: .success,
+                        endpoint: endpoint,
+                        responseBytes: cached.count,
+                        cacheSource: "offline_response"
+                    ))
+                    return cached
+                }
+                if case .cacheOnly = cachePolicy {
+                    throw ZhihuAPIError.cachedResponseUnavailable
+                }
+            case .disabled, .offlineFallback, .offlinePackWarm:
+                break
+            }
             var request = URLRequest(url: url)
-            request.httpMethod = method
+            request.httpMethod = normalizedMethod
             request.httpBody = body
             additionalHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
             request.setValue(credentials.userAgent, forHTTPHeaderField: "User-Agent")
@@ -155,6 +252,11 @@ actor ZhihuAPIClient {
                 request.setValue(xsrf, forHTTPHeaderField: "x-xsrftoken")
             }
             signer.applySignature(to: &request, cookies: credentials.cookies, body: body)
+            try validateAccountSnapshot(accountSnapshot)
+            try validateExpectedAccountID(
+                expectedAccountID,
+                accountSnapshot: accountSnapshot
+            )
 
             let (data, response) = try await session.data(for: request)
             guard let response = response as? HTTPURLResponse,
@@ -162,10 +264,37 @@ actor ZhihuAPIClient {
                   ZhihuAPIURLPolicy.allowsAPIRequest(finalURL)
             else { throw ZhihuAPIError.invalidResponse }
             statusCode = response.statusCode
-            try persistResponseCookies(response)
+            try validateAccountSnapshot(accountSnapshot)
+            try validateExpectedAccountID(
+                expectedAccountID,
+                accountSnapshot: accountSnapshot
+            )
+            try persistResponseCookies(
+                response,
+                accountSnapshot: accountSnapshot,
+                expectedCredentialIdentity: credentials.identity
+            )
+            try validateAccountSnapshot(accountSnapshot)
             guard (200..<300).contains(response.statusCode) else {
                 throw ZhihuAPIError.httpStatus(response.statusCode)
             }
+            if let cacheRequest,
+               let cacheGeneration,
+               finalURL == cacheRequest.url {
+                try cacheValidation?(data)
+                let stored = await responseCache.store(
+                    data,
+                    for: cacheRequest,
+                    ifGenerationMatches: cacheGeneration
+                )
+                if case .offlinePackWarm = cachePolicy, !stored {
+                    throw ZhihuAPIError.cacheWriteFailed
+                }
+                try validateAccountSnapshot(accountSnapshot)
+            } else if case .offlinePackWarm = cachePolicy {
+                throw ZhihuAPIError.cacheWriteFailed
+            }
+            try Task.checkCancellation()
             diagnostics.record(.init(
                 durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
                 category: "network",
@@ -177,31 +306,150 @@ actor ZhihuAPIClient {
             ))
             return data
         } catch {
-            let result: PerformanceDiagnosticEvent.Result =
-                error is CancellationError || (error as? URLError)?.code == .cancelled
-                ? .cancelled
-                : .failure
-            diagnostics.record(.init(
-                durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
-                category: "network",
-                operation: "zhihu_api_request",
-                result: result,
+            let requestError = error
+            if requestError.isNativeConnectivityFailure,
+               cachePolicy.allowsConnectivityFallback,
+               let cacheRequest {
+                do {
+                    try Task.checkCancellation()
+                    try validateAccountSnapshot(accountSnapshot)
+                    if let cached = await validatedCachedResponse(
+                        for: cacheRequest,
+                        validation: cacheValidation
+                    ) {
+                        try Task.checkCancellation()
+                        try validateAccountSnapshot(accountSnapshot)
+                        diagnostics.record(.init(
+                            durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+                            category: "network",
+                            operation: "zhihu_api_request",
+                            result: .success,
+                            endpoint: endpoint,
+                            responseBytes: cached.count,
+                            cacheSource: "offline_response"
+                        ))
+                        return cached
+                    }
+                } catch {
+                    recordFailure(
+                        error,
+                        startedAt: startedAt,
+                        endpoint: endpoint,
+                        statusCode: statusCode
+                    )
+                    throw error
+                }
+            }
+            recordFailure(
+                requestError,
+                startedAt: startedAt,
                 endpoint: endpoint,
-                httpStatus: statusCode,
-                errorKind: PerformanceDiagnosticEvent.sanitizedErrorKind(error)
-            ))
-            throw error
+                statusCode: statusCode
+            )
+            throw requestError
         }
     }
 
-    private func credentials(authentication: ZhihuRequestAuthentication) throws -> Credentials {
-        if case .guest = authentication {
-            return Credentials(cookies: [:], userAgent: Self.defaultUserAgent)
+    func clearCachedResponses(forAccountID accountID: String) async throws {
+        guard let normalizedAccountID = accountID.nonBlank else { return }
+        try await responseCache.removeResponses(forAccountID: normalizedAccountID)
+    }
+
+    private func makeCacheRequest(
+        policy: ZhihuAPICachePolicy,
+        method: String,
+        url: URL,
+        accountSnapshot: RequestAccountSnapshot
+    ) -> ZhihuAPIResponseCacheRequest? {
+        switch policy {
+        case .disabled:
+            return nil
+        case .offlineFallback, .cacheFirst, .cacheOnly, .offlinePackWarm:
+            break
+        }
+        guard ZhihuAPIOfflineCacheEligibility.allows(method: method, url: url),
+              let accountID = accountSnapshot.accountID
+        else { return nil }
+        return ZhihuAPIResponseCacheRequest(accountID: accountID, url: url)
+    }
+
+    private func requestAccountSnapshot(
+        authentication: ZhihuRequestAuthentication
+    ) throws -> RequestAccountSnapshot {
+        if case .guest = authentication { return .untracked }
+        guard let multipleAccountStore = accountStore as? MultipleAccountJSONStore else {
+            return .untracked
         }
         do {
-            guard let stored = try ZhihuAccountSessionCodec.credentials(from: accountStore.load()) else {
+            let snapshot = try multipleAccountStore.currentAccountSnapshot()
+            return .tracked(
+                accountID: snapshot.accountID?.nonBlank,
+                accountJSON: snapshot.accountJSON
+            )
+        } catch MultipleAccountStoreError.accountChanged {
+            throw ZhihuAPIError.accountChanged
+        } catch {
+            throw ZhihuAPIError.accountUnavailable
+        }
+    }
+
+    private func validateAccountSnapshot(_ snapshot: RequestAccountSnapshot) throws {
+        guard case let .tracked(expectedAccountID, _) = snapshot,
+              let multipleAccountStore = accountStore as? MultipleAccountJSONStore
+        else { return }
+        do {
+            guard try multipleAccountStore.currentAccountSnapshot().accountID?.nonBlank
+                == expectedAccountID
+            else {
+                throw ZhihuAPIError.accountChanged
+            }
+        } catch MultipleAccountStoreError.accountChanged {
+            throw ZhihuAPIError.accountChanged
+        } catch let error as ZhihuAPIError {
+            throw error
+        } catch {
+            throw ZhihuAPIError.accountUnavailable
+        }
+    }
+
+    private func validateExpectedAccountID(
+        _ expectedAccountID: String?,
+        accountSnapshot: RequestAccountSnapshot
+    ) throws {
+        guard let expectedAccountID else { return }
+        guard let normalizedExpectedAccountID = expectedAccountID.nonBlank,
+              accountSnapshot.accountID == normalizedExpectedAccountID
+        else {
+            throw ZhihuAPIError.accountChanged
+        }
+    }
+
+    private func credentials(
+        authentication: ZhihuRequestAuthentication,
+        accountSnapshot: RequestAccountSnapshot
+    ) throws -> Credentials {
+        if case .guest = authentication {
+            return Credentials(
+                cookies: [:],
+                userAgent: Self.defaultUserAgent,
+                identity: nil
+            )
+        }
+        do {
+            let accountJSON: String?
+            switch accountSnapshot {
+            case .untracked:
+                accountJSON = try accountStore.load()
+            case let .tracked(_, snapshotAccountJSON):
+                accountJSON = snapshotAccountJSON
+            }
+            guard let stored = try ZhihuAccountSessionCodec.credentials(from: accountJSON) else {
                 if case .accountRequired = authentication { throw ZhihuAPIError.authenticationRequired }
-                return Credentials(cookies: [:], userAgent: Self.defaultUserAgent)
+                return Credentials(
+                    cookies: [:],
+                    userAgent: Self.defaultUserAgent,
+                    identity: CredentialIdentity(nil)
+                )
             }
             if case .accountRequired = authentication {
                 guard stored.cookies["d_c0"]?.nonBlank != nil,
@@ -210,7 +458,8 @@ actor ZhihuAPIClient {
             }
             return Credentials(
                 cookies: stored.cookies,
-                userAgent: stored.userAgent?.nonBlank ?? Self.defaultUserAgent
+                userAgent: stored.userAgent?.nonBlank ?? Self.defaultUserAgent,
+                identity: CredentialIdentity(stored)
             )
         } catch let error as ZhihuAPIError {
             throw error
@@ -219,7 +468,11 @@ actor ZhihuAPIClient {
         }
     }
 
-    private func persistResponseCookies(_ response: HTTPURLResponse) throws {
+    private func persistResponseCookies(
+        _ response: HTTPURLResponse,
+        accountSnapshot: RequestAccountSnapshot,
+        expectedCredentialIdentity: CredentialIdentity?
+    ) throws {
         guard let responseURL = response.url else { return }
         var headerFields: [String: String] = [:]
         response.allHeaderFields.forEach { key, value in
@@ -229,12 +482,69 @@ actor ZhihuAPIClient {
         let responseCookies = HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: responseURL)
         guard !responseCookies.isEmpty else { return }
 
+        let update: (String?) throws -> String? = { accountJSON in
+            if let expectedCredentialIdentity {
+                let currentCredentials = try ZhihuAccountSessionCodec.credentials(from: accountJSON)
+                guard CredentialIdentity(currentCredentials) == expectedCredentialIdentity else {
+                    throw ZhihuAPIError.accountChanged
+                }
+            }
+            return try ZhihuAccountSessionCodec.merging(
+                cookies: responseCookies,
+                into: accountJSON
+            )
+        }
+
         do {
-            try ZhihuAccountCookieWriter.merge(cookies: responseCookies, into: accountStore)
+            switch accountSnapshot {
+            case .untracked:
+                try accountStore.update(update)
+            case let .tracked(expectedAccountID, _):
+                guard let multipleAccountStore = accountStore as? MultipleAccountJSONStore else {
+                    throw ZhihuAPIError.accountChanged
+                }
+                try multipleAccountStore.updateCurrentAccount(
+                    expectedAccountID: expectedAccountID,
+                    update
+                )
+            }
+        } catch MultipleAccountStoreError.accountChanged {
+            throw ZhihuAPIError.accountChanged
         } catch let error as ZhihuAPIError {
             throw error
         } catch {
             throw ZhihuAPIError.accountUnavailable
+        }
+    }
+
+    private func recordFailure(
+        _ error: Error,
+        startedAt: TimeInterval,
+        endpoint: PerformanceDiagnosticEndpoint?,
+        statusCode: Int?
+    ) {
+        diagnostics.record(.init(
+            durationMilliseconds: PerformanceDiagnosticEvent.duration(since: startedAt),
+            category: "network",
+            operation: "zhihu_api_request",
+            result: error.isNativeRequestCancellation ? .cancelled : .failure,
+            endpoint: endpoint,
+            httpStatus: statusCode,
+            errorKind: PerformanceDiagnosticEvent.sanitizedErrorKind(error)
+        ))
+    }
+
+    private func validatedCachedResponse(
+        for request: ZhihuAPIResponseCacheRequest,
+        validation: (@Sendable (Data) throws -> Void)?
+    ) async -> Data? {
+        guard let data = await responseCache.response(for: request) else { return nil }
+        do {
+            try validation?(data)
+            return data
+        } catch {
+            try? await responseCache.removeResponse(for: request)
+            return nil
         }
     }
 
@@ -252,6 +562,27 @@ actor ZhihuAPIClient {
     private struct Credentials {
         let cookies: [String: String]
         let userAgent: String
+        let identity: CredentialIdentity?
+    }
+
+    private struct CredentialIdentity: Equatable {
+        let deviceCookie: String?
+        let loginCookie: String?
+
+        init(_ credentials: ZhihuAccountCredentials?) {
+            deviceCookie = credentials?.cookies["d_c0"]?.nonBlank
+            loginCookie = credentials?.cookies["z_c0"]?.nonBlank
+        }
+    }
+
+    private enum RequestAccountSnapshot: Sendable {
+        case untracked
+        case tracked(accountID: String?, accountJSON: String?)
+
+        var accountID: String? {
+            guard case let .tracked(accountID, _) = self else { return nil }
+            return accountID
+        }
     }
 }
 

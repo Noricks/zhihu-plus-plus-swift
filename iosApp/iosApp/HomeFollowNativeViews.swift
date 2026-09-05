@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct NativeChannelTaskIdentity: Hashable {
     let isActive: Bool
@@ -8,7 +9,10 @@ struct NativeChannelTaskIdentity: Hashable {
 private struct NativeHomeFeedListLayout: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
-        content.environment(\.defaultMinListRowHeight, 1)
+        content
+            .environment(\.defaultMinListRowHeight, 1)
+            .scrollContentBackground(.hidden)
+            .background(NativeZhihuVisualStyle.backgroundColor)
     }
 }
 
@@ -57,8 +61,7 @@ struct NativeScrollToTopRequestPolicy {
 }
 
 struct NativeHomeHeaderLayoutPolicy {
-    static let horizontalContentInset: CGFloat = 20
-    static let actionBarHeight: CGFloat = 48
+    static let horizontalContentInset: CGFloat = 14
     static let channelSelectorHeight: CGFloat = 48
     static let expandedHeaderHeight = channelSelectorHeight
 
@@ -108,13 +111,310 @@ struct NativeRootHeaderVisibility {
 }
 
 struct NativeHomeRefreshIndicatorPresentation {
-    static let minimumPullDistance: CGFloat = 8
+    static let fullyRevealedPullDistance: CGFloat = 30
+    static let minimumScale: CGFloat = 0.72
+
+    static func progress(
+        pullDistance: CGFloat,
+        isRefreshing: Bool
+    ) -> CGFloat {
+        guard !isRefreshing else { return 1 }
+        let normalized = min(max(pullDistance / fullyRevealedPullDistance, 0), 1)
+        return 1 - (1 - normalized) * (1 - normalized)
+    }
 
     static func isVisible(
         pullDistance: CGFloat,
         isRefreshing: Bool
     ) -> Bool {
-        isRefreshing || pullDistance >= minimumPullDistance
+        progress(pullDistance: pullDistance, isRefreshing: isRefreshing) > 0
+    }
+
+    static func opacity(
+        pullDistance: CGFloat,
+        isRefreshing: Bool
+    ) -> Double {
+        Double(progress(pullDistance: pullDistance, isRefreshing: isRefreshing))
+    }
+
+    static func scale(
+        pullDistance: CGFloat,
+        isRefreshing: Bool
+    ) -> CGFloat {
+        minimumScale + (1 - minimumScale) * progress(
+            pullDistance: pullDistance,
+            isRefreshing: isRefreshing
+        )
+    }
+}
+
+struct NativeShortPullRefreshPolicy {
+    /// Deliberately shorter than UIRefreshControl's system threshold. This is
+    /// enough to make the gesture intentional without requiring a large pull.
+    static let triggerDistance: CGFloat = 32
+    static let settledDistance: CGFloat = 44
+
+    static func shouldTrigger(
+        maximumPullDistance: CGFloat,
+        isEnabled: Bool,
+        isRefreshing: Bool
+    ) -> Bool {
+        isEnabled && !isRefreshing && maximumPullDistance >= triggerDistance
+    }
+}
+
+private struct NativeHomeRefreshIndicator: View {
+    let pullDistance: CGFloat
+    let isRefreshing: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let progress = NativeHomeRefreshIndicatorPresentation.progress(
+            pullDistance: pullDistance,
+            isRefreshing: isRefreshing
+        )
+        ZStack {
+            if isRefreshing {
+                NativeHomeLoadingSpinner(reduceMotion: reduceMotion)
+                    .transition(.opacity.combined(with: .scale(scale: 0.78)))
+            } else {
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 15, weight: .semibold))
+                    .rotationEffect(.degrees(Double(progress) * 180))
+                    .transition(.opacity.combined(with: .scale(scale: 0.78)))
+            }
+        }
+            .foregroundStyle(.secondary)
+            .frame(width: 24, height: 24)
+            .opacity(NativeHomeRefreshIndicatorPresentation.opacity(
+                pullDistance: pullDistance,
+                isRefreshing: isRefreshing
+            ))
+            .scaleEffect(NativeHomeRefreshIndicatorPresentation.scale(
+                pullDistance: pullDistance,
+                isRefreshing: isRefreshing
+            ))
+            .animation(.easeInOut(duration: 0.18), value: isRefreshing)
+            .accessibilityHidden(!NativeHomeRefreshIndicatorPresentation.isVisible(
+                pullDistance: pullDistance,
+                isRefreshing: isRefreshing
+            ))
+            .accessibilityLabel("正在更新")
+            .accessibilityIdentifier("home_refresh_indicator")
+    }
+}
+
+private struct NativeHomeLoadingSpinner: View {
+    let reduceMotion: Bool
+
+    var body: some View {
+        if reduceMotion {
+            spinnerShape
+        } else {
+            TimelineView(.animation(minimumInterval: 1 / 60)) { context in
+                let elapsed = context.date.timeIntervalSinceReferenceDate
+                spinnerShape
+                    .rotationEffect(.degrees(elapsed.truncatingRemainder(dividingBy: 0.72) / 0.72 * 360))
+            }
+        }
+    }
+
+    private var spinnerShape: some View {
+        Circle()
+            .trim(from: 0.12, to: 0.86)
+            .stroke(style: StrokeStyle(lineWidth: 2.1, lineCap: .round))
+            .frame(width: 17, height: 17)
+    }
+}
+
+private struct NativeShortPullRefreshModifier: ViewModifier {
+    let isEnabled: Bool
+    let action: @MainActor () async -> Void
+
+    func body(content: Content) -> some View {
+        content.background {
+            NativeShortPullRefreshInstaller(
+                isEnabled: isEnabled,
+                action: action
+            )
+                .frame(width: 1, height: 1)
+        }
+    }
+}
+
+private struct NativeShortPullRefreshInstaller: UIViewRepresentable {
+    let isEnabled: Bool
+    let action: @MainActor () async -> Void
+
+    func makeUIView(context: Context) -> ProbeView {
+        let view = ProbeView()
+        view.update(isEnabled: isEnabled, action: action)
+        return view
+    }
+
+    func updateUIView(_ uiView: ProbeView, context: Context) {
+        uiView.update(isEnabled: isEnabled, action: action)
+        uiView.scheduleInstallation()
+    }
+
+    static func dismantleUIView(_ uiView: ProbeView, coordinator: Void) {
+        uiView.detach()
+    }
+
+    @MainActor
+    final class ProbeView: UIView {
+        private weak var installedScrollView: UIScrollView?
+        private let refreshControl = UIRefreshControl()
+        private var maximumPullDistance: CGFloat = 0
+        private var refreshTask: Task<Void, Never>?
+        private var isRefreshEnabled = true
+        private var action: (@MainActor () async -> Void)?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+            refreshControl.tintColor = .clear
+            refreshControl.addTarget(
+                self,
+                action: #selector(handleSystemRefresh),
+                for: .valueChanged
+            )
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { nil }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            scheduleInstallation()
+        }
+
+        func update(
+            isEnabled: Bool,
+            action: @escaping @MainActor () async -> Void
+        ) {
+            isRefreshEnabled = isEnabled
+            refreshControl.isEnabled = isEnabled
+            self.action = action
+            if !isEnabled { maximumPullDistance = 0 }
+        }
+
+        func scheduleInstallation() {
+            DispatchQueue.main.async { [weak self] in
+                self?.installIfNeeded()
+            }
+        }
+
+        func detach() {
+            refreshTask?.cancel()
+            refreshTask = nil
+            if let installedScrollView {
+                installedScrollView.panGestureRecognizer.removeTarget(
+                    self,
+                    action: #selector(handlePan(_:))
+                )
+                if installedScrollView.refreshControl === refreshControl {
+                    installedScrollView.refreshControl = nil
+                }
+            }
+            installedScrollView = nil
+        }
+
+        private func installIfNeeded() {
+            guard let scrollView = ancestorScrollView() else { return }
+            guard installedScrollView !== scrollView else { return }
+            detach()
+            installedScrollView = scrollView
+            scrollView.refreshControl = refreshControl
+            scrollView.panGestureRecognizer.addTarget(self, action: #selector(handlePan(_:)))
+        }
+
+        private func ancestorScrollView() -> UIScrollView? {
+            var candidate = superview
+            while let view = candidate {
+                if let scrollView = view as? UIScrollView { return scrollView }
+                candidate = view.superview
+            }
+            return nil
+        }
+
+        @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+            guard let scrollView = installedScrollView,
+                  refreshTask == nil,
+                  !refreshControl.isRefreshing
+            else { return }
+
+            switch gesture.state {
+            case .began:
+                maximumPullDistance = pullDistance(in: scrollView)
+            case .changed:
+                maximumPullDistance = max(
+                    maximumPullDistance,
+                    pullDistance(in: scrollView)
+                )
+            case .ended:
+                let shouldTrigger = NativeShortPullRefreshPolicy.shouldTrigger(
+                    maximumPullDistance: maximumPullDistance,
+                    isEnabled: isRefreshEnabled,
+                    isRefreshing: refreshTask != nil || refreshControl.isRefreshing
+                )
+                maximumPullDistance = 0
+                if shouldTrigger { beginRefresh(in: scrollView) }
+            case .cancelled, .failed:
+                maximumPullDistance = 0
+            default:
+                break
+            }
+        }
+
+        @objc private func handleSystemRefresh() {
+            guard let scrollView = installedScrollView else { return }
+            beginRefresh(in: scrollView)
+        }
+
+        private func beginRefresh(in scrollView: UIScrollView) {
+            guard refreshTask == nil, isRefreshEnabled, let action else {
+                refreshControl.endRefreshing()
+                return
+            }
+
+            let topInset = scrollView.adjustedContentInset.top
+            if !refreshControl.isRefreshing { refreshControl.beginRefreshing() }
+            let targetOffset = CGPoint(
+                x: scrollView.contentOffset.x,
+                y: -(topInset + NativeShortPullRefreshPolicy.settledDistance)
+            )
+            UIView.animate(
+                withDuration: 0.2,
+                delay: 0,
+                options: [.allowUserInteraction, .beginFromCurrentState, .curveEaseOut]
+            ) {
+                scrollView.setContentOffset(targetOffset, animated: false)
+            }
+
+            refreshTask = Task { @MainActor [weak self] in
+                await action()
+                guard let self, !Task.isCancelled else { return }
+                self.finishRefresh()
+            }
+        }
+
+        private func finishRefresh() {
+            refreshTask = nil
+            UIView.animate(
+                withDuration: 0.24,
+                delay: 0,
+                options: [.allowUserInteraction, .beginFromCurrentState, .curveEaseInOut]
+            ) {
+                self.refreshControl.endRefreshing()
+                self.installedScrollView?.layoutIfNeeded()
+            }
+        }
+
+        private func pullDistance(in scrollView: UIScrollView) -> CGFloat {
+            max(-(scrollView.contentOffset.y + scrollView.adjustedContentInset.top), 0)
+        }
     }
 }
 
@@ -130,6 +430,16 @@ extension View {
         modifier(NativeHomeFeedScrollTracking(
             collapseProgress: collapseProgress,
             isActive: isActive
+        ))
+    }
+
+    func nativeShortPullRefresh(
+        isEnabled: Bool,
+        action: @escaping @MainActor () async -> Void
+    ) -> some View {
+        modifier(NativeShortPullRefreshModifier(
+            isEnabled: isEnabled,
+            action: action
         ))
     }
 }
@@ -179,19 +489,14 @@ struct NativeRootLargeTitle: View {
                 Color.clear
                     .frame(height: NativeHomeHeaderLayoutPolicy.expandedHeaderHeight)
                     .overlay(alignment: .top) {
-                        if NativeHomeRefreshIndicatorPresentation.isVisible(
+                        // The native refresh control lives above this transparent spacer
+                        // and is covered by the fixed opaque header. This duplicate visual
+                        // follows the pull continuously so it does not pop in abruptly.
+                        NativeHomeRefreshIndicator(
                             pullDistance: pullDistance,
                             isRefreshing: isRefreshing
-                        ) {
-                            // The native refresh control lives above this transparent spacer
-                            // and is covered by the fixed opaque header. Keeping one indicator
-                            // inside the spacer makes it enter the revealed overscroll region.
-                            ProgressView()
-                                .controlSize(.regular)
-                                .padding(.top, 14)
-                                .accessibilityLabel("正在更新")
-                                .accessibilityIdentifier("home_refresh_indicator")
-                        }
+                        )
+                            .padding(.top, 14)
                     }
             }
         }
@@ -332,6 +637,12 @@ struct HomeNativeView: View {
                     collapseProgress: $collapseProgress
                 )
                     .id(NativeHomeHeaderLayoutPolicy.scrollAnchor(for: .recommendation))
+                    // Keep the UIKit probe inside a List cell. A modifier on the
+                    // List background can be a sibling of the backing scroll view
+                    // on newer SwiftUI releases, leaving no UIScrollView ancestor.
+                    .nativeShortPullRefresh(isEnabled: isActiveChannel) {
+                        await performPullRefresh()
+                    }
 
                 if store.items.isEmpty, store.isLoading {
                     HStack { Spacer(); ProgressView("正在加载推荐"); Spacer() }
@@ -343,7 +654,13 @@ struct HomeNativeView: View {
                         store.opened(item)
                         onOpen(route)
                     }
-                    .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
+                    .listRowInsets(EdgeInsets(top: 7, leading: 16, bottom: 7, trailing: 16))
+                    .listRowBackground(NativeZhihuVisualStyle.backgroundColor)
+                    .listRowSeparatorTint(NativeZhihuVisualStyle.separatorColor)
+                    .onAppear {
+                        guard isActiveChannel else { return }
+                        Task { await store.prefetchNextPageIfNeeded(after: item.id) }
+                    }
                 }
 
                 if let message = store.errorMessage {
@@ -375,13 +692,9 @@ struct HomeNativeView: View {
             )
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-            .refreshable {
-                guard isActiveChannel else { return }
-                let outcome = await store.refresh(intent: .pull)
-                if outcome == .ignored {
-                    hapticFeedback(.refreshIgnored)
-                }
-            }
+            // This remains as a durable fallback if a future SwiftUI release
+            // changes List's UIKit hierarchy before the short-pull probe installs.
+            .refreshable { await performPullRefresh() }
             .onAppear {
                 // A request token records an action that already happened. Returning
                 // from a pushed answer must not replay it and destroy List's retained
@@ -415,6 +728,14 @@ struct HomeNativeView: View {
             from: store.items,
             blockedMemberIDs: questionAuthorBlocklist.blockedMemberIDs
         )
+    }
+
+    private func performPullRefresh() async {
+        guard isActiveChannel else { return }
+        let outcome = await store.refresh(intent: .pull)
+        if outcome == .ignored {
+            hapticFeedback(.refreshIgnored)
+        }
     }
 
     private func scrollToTop(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -487,7 +808,9 @@ struct FollowNativeView: View {
                         titleDisplayMode: .full,
                         onOpen: onOpen
                     )
-                        .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
+                        .listRowInsets(EdgeInsets(top: 7, leading: 16, bottom: 7, trailing: 16))
+                        .listRowBackground(NativeZhihuVisualStyle.backgroundColor)
+                        .listRowSeparatorTint(NativeZhihuVisualStyle.separatorColor)
                 }
 
                 if let message = store.moments.errorMessage {

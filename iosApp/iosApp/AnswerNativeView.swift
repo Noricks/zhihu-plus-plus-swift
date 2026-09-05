@@ -6,8 +6,6 @@ struct AnswerNativeView: View {
     let pinAnswerDate: Bool
     let onNavigate: (QANavigationIntent) -> Void
 
-    @State private var showsCollections = false
-
     var body: some View {
         Group {
             if let content = store.content {
@@ -26,10 +24,10 @@ struct AnswerNativeView: View {
         }
         .navigationTitle(store.initialRoute.kind == .answer ? "回答" : "文章")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await store.loadIfNeeded() }
-        .sheet(isPresented: $showsCollections) {
-            QACollectionsSheet(store: store)
-        }
+        // Page visibility is owned by AnswerPagerStore. Hosting an adjacent page may
+        // start its view task before the user actually swipes to it, so preload the
+        // body here without reporting a false read-history event.
+        .task { await store.preloadIfNeeded() }
         .alert(item: messageBinding) { message in
             Alert(
                 title: Text("操作结果"),
@@ -129,72 +127,6 @@ struct AnswerNativeView: View {
             .padding(.horizontal, 18)
             .padding(.vertical, 14)
         }
-        .safeAreaInset(edge: .bottom) {
-            AnswerActionBar(
-                content: content,
-                voteInFlight: store.isVoteMutationInFlight,
-                onVoteUp: {
-                    let target: QAVoteState = content.voteState == .up ? .neutral : .up
-                    Task { await store.setVote(target) }
-                },
-                onVoteDown: {
-                    let target: QAVoteState = content.voteState == .down ? .neutral : .down
-                    Task { await store.setVote(target) }
-                },
-                onFavorite: {
-                    showsCollections = true
-                    Task { await store.loadCollections() }
-                },
-                onComments: {
-                    let subject: CommentSubjectDTO = content.route.kind == .answer
-                        ? .answer(content.route.contentID)
-                        : .article(content.route.contentID)
-                    onNavigate(.comments(CommentThreadRouteDTO(
-                        subject: subject,
-                        shareContext: CommentShareContextDTO(
-                            title: content.title,
-                            excerpt: commentShareExcerpt(from: content.blocks),
-                            sourceURL: content.sourceURL
-                        )
-                    )))
-                }
-            )
-        }
-    }
-
-    private func commentShareExcerpt(from blocks: [QABodyBlock]) -> String? {
-        let text = blocks
-            .compactMap(commentShareText)
-            .joined(separator: " ")
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
-        guard !text.isEmpty else { return nil }
-        let limit = text.index(text.startIndex, offsetBy: min(160, text.count))
-        return String(text[..<limit])
-    }
-
-    private func commentShareText(_ block: QABodyBlock) -> String? {
-        switch block {
-        case let .paragraph(_, runs),
-             let .heading(_, _, runs),
-             let .quote(_, runs),
-             let .segment(_, _, runs):
-            return runs.map(\.text).joined()
-        case let .list(_, _, items):
-            return items.flatMap { item in
-                [item.runs.map(\.text).joined()] + item.nestedLists.flatMap(commentShareListText)
-            }.joined(separator: " ")
-        case let .code(_, _, text), let .formula(_, text):
-            return text
-        case .image, .video, .divider:
-            return nil
-        }
-    }
-
-    private func commentShareListText(_ list: QAListGroup) -> [String] {
-        list.items.flatMap { item in
-            [item.runs.map(\.text).joined()] + item.nestedLists.flatMap(commentShareListText)
-        }
     }
 
     private var messageBinding: Binding<QAUserMessage?> {
@@ -275,73 +207,281 @@ private struct QADateMetadata: View {
     }
 }
 
-private struct AnswerActionBar: View {
+struct AnswerActionBar: View {
     let content: AnswerDTO
     let voteInFlight: Bool
+    let bottomSafeAreaOverlap: CGFloat
+    let onAuthor: () -> Void
     let onVoteUp: () -> Void
     let onVoteDown: () -> Void
     let onFavorite: () -> Void
     let onComments: () -> Void
 
     var body: some View {
-        Group {
-            if #available(iOS 26, *) {
-                GlassEffectContainer(spacing: 8) {
-                    actions
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .glassEffect(.regular.interactive(), in: .capsule)
-                }
-            } else {
-                actions
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(.ultraThinMaterial, in: Capsule())
+        NativeFullBleedBottomBar(bottomSafeAreaOverlap: bottomSafeAreaOverlap) {
+            GeometryReader { proxy in
+                let metrics = QAEngagementBarLayoutPolicy.metrics(for: proxy.size.width)
+                actions(metrics: metrics)
+                    .padding(.horizontal, metrics.horizontalPadding)
+                    .padding(.vertical, metrics.verticalPadding)
             }
+            .frame(height: QAEngagementBarLayoutPolicy.contentHeight)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 6)
     }
 
-    private var actions: some View {
-        HStack(spacing: 4) {
-            action("hand.thumbsup", count: content.voteUpCount, selected: content.voteState == .up, action: onVoteUp)
+    private func actions(metrics: QAEngagementBarLayoutMetrics) -> some View {
+        HStack(spacing: 0) {
+            authorAction(maxWidth: metrics.authorWidth)
+            Spacer(minLength: metrics.sectionSpacing)
+            HStack(spacing: metrics.actionSpacing) {
+                action(
+                    .triangle(.up),
+                    label: "赞同",
+                    count: content.voteUpCount,
+                    selected: content.voteState == .up,
+                    metrics: metrics,
+                    action: onVoteUp
+                )
                 .disabled(voteInFlight)
-            action("hand.thumbsdown", label: "反对", selected: content.voteState == .down, action: onVoteDown)
+                action(
+                    .triangle(.down),
+                    label: "反对",
+                    selected: content.voteState == .down,
+                    metrics: metrics,
+                    action: onVoteDown
+                )
                 .disabled(voteInFlight || content.route.kind == .article)
-            action(
-                content.favoriteState == .favorited ? "star.fill" : "star",
-                count: content.favoriteCount,
-                selected: content.favoriteState == .favorited,
-                action: onFavorite
-            )
-            action("bubble.left", count: content.commentCount, selected: false, action: onComments)
+                action(
+                    .system(content.favoriteState == .favorited ? "star.fill" : "star"),
+                    label: "收藏",
+                    count: content.favoriteCount,
+                    selected: content.favoriteState == .favorited,
+                    metrics: metrics,
+                    action: onFavorite
+                )
+                action(
+                    .system("bubble.left"),
+                    label: "评论",
+                    count: content.commentCount,
+                    selected: false,
+                    metrics: metrics,
+                    action: onComments
+                )
+            }
         }
+    }
+
+    private func authorAction(maxWidth: CGFloat) -> some View {
+        Button(action: onAuthor) {
+            HStack(spacing: 7) {
+                AsyncImage(url: content.author.avatarURL) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    Image(systemName: "person.crop.circle.fill")
+                        .resizable()
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(width: 30, height: 30)
+                .clipShape(Circle())
+
+                Text(content.author.displayName)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .padding(.leading, 3)
+            .padding(.trailing, 10)
+            .frame(minHeight: 44)
+            .background(Color(uiColor: .secondarySystemFill), in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(content.author.personIntent == nil)
+        .frame(width: maxWidth, alignment: .leading)
+        .accessibilityLabel(content.author.displayName)
+        .accessibilityHint(content.author.personIntent == nil ? "" : "打开作者主页")
     }
 
     private func action(
-        _ systemName: String,
+        _ icon: QAEngagementIcon,
+        label: String,
         count: Int? = nil,
-        label: String? = nil,
         selected: Bool,
+        metrics: QAEngagementBarLayoutMetrics,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            VStack(spacing: 2) {
-                Image(systemName: systemName).font(.system(size: 20, weight: selected ? .semibold : .regular))
-                Text(label ?? count.map(String.init) ?? "")
-                    .font(.caption2.monospacedDigit())
-                    .lineLimit(1)
+            ZStack {
+                engagementIcon(icon, selected: selected, metrics: metrics)
+                if let count {
+                    Text(QAEngagementCountFormatter.string(for: count))
+                        .font(.caption2.monospacedDigit())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .frame(width: metrics.badgeMaxWidth)
+                        .padding(.horizontal, 2)
+                        .background(.bar, in: Capsule())
+                        .offset(x: metrics.badgeOffset.width, y: metrics.badgeOffset.height)
+                }
             }
-            .frame(maxWidth: .infinity, minHeight: 44)
+            .frame(width: metrics.actionHitArea, height: metrics.actionHitArea)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(selected ? Color.accentColor : Color(uiColor: .label))
+        .foregroundStyle(selected ? Color.accentColor : Color(uiColor: .secondaryLabel))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(accessibilityValue(count: count, selected: selected))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    @ViewBuilder
+    private func engagementIcon(
+        _ icon: QAEngagementIcon,
+        selected: Bool,
+        metrics: QAEngagementBarLayoutMetrics
+    ) -> some View {
+        switch icon {
+        case let .triangle(direction):
+            QAEquilateralTriangle(direction: direction)
+                .stroke(
+                    style: StrokeStyle(
+                        lineWidth: selected
+                            ? metrics.selectedTriangleLineWidth
+                            : metrics.triangleLineWidth,
+                        lineJoin: .round
+                    )
+                )
+                .frame(width: metrics.triangleSide, height: metrics.triangleHeight)
+                .offset(y: metrics.triangleVisualCenterOffset(for: direction))
+                .frame(width: metrics.iconCanvas, height: metrics.iconCanvas)
+        case let .system(systemName):
+            Image(systemName: systemName)
+                .font(.system(size: metrics.systemIconSize, weight: selected ? .semibold : .regular))
+                .frame(width: metrics.iconCanvas, height: metrics.iconCanvas)
+        }
+    }
+
+    private func accessibilityValue(count: Int?, selected: Bool) -> String {
+        [
+            count.map { "\($0)" },
+            selected ? "已选择" : nil
+        ]
+        .compactMap { $0 }
+        .joined(separator: "，")
     }
 }
 
-private struct QACollectionsSheet: View {
+private enum QAEngagementIcon {
+    case triangle(QATriangleDirection)
+    case system(String)
+}
+
+enum QATriangleDirection: Equatable {
+    case up
+    case down
+}
+
+struct QAEquilateralTriangle: Shape {
+    let direction: QATriangleDirection
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        switch direction {
+        case .up:
+            path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        case .down:
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        }
+        path.closeSubpath()
+        return path
+    }
+}
+
+struct QAEngagementBarLayoutMetrics: Equatable {
+    let horizontalPadding: CGFloat
+    let verticalPadding: CGFloat
+    let sectionSpacing: CGFloat
+    let actionSpacing: CGFloat
+    let actionHitArea: CGFloat
+    let authorWidth: CGFloat
+    let iconCanvas: CGFloat
+    let systemIconSize: CGFloat
+    let triangleSide: CGFloat
+    let triangleLineWidth: CGFloat
+    let selectedTriangleLineWidth: CGFloat
+    let badgeMaxWidth: CGFloat
+    let badgeOffset: CGSize
+
+    var triangleHeight: CGFloat { triangleSide * CGFloat(3).squareRoot() / 2 }
+    var actionGroupWidth: CGFloat { actionHitArea * 4 + actionSpacing * 3 }
+    var fixedContentWidth: CGFloat {
+        horizontalPadding * 2 + authorWidth + sectionSpacing + actionGroupWidth
+    }
+
+    func triangleVisualCenterOffset(for direction: QATriangleDirection) -> CGFloat {
+        let centroidCorrection = triangleHeight / 6
+        return direction == .up ? -centroidCorrection : centroidCorrection
+    }
+}
+
+enum QAEngagementBarLayoutPolicy {
+    static let contentHeight: CGFloat = 52
+    static let minimumHomeIndicatorClearance: CGFloat = 18
+    static let maximumSafeAreaOverlap: CGFloat = 16
+
+    static func safeAreaOverlap(for bottomSafeAreaInset: CGFloat) -> CGFloat {
+        min(
+            maximumSafeAreaOverlap,
+            max(0, bottomSafeAreaInset - minimumHomeIndicatorClearance)
+        )
+    }
+
+    static func metrics(for containerWidth: CGFloat) -> QAEngagementBarLayoutMetrics {
+        let isWide = containerWidth >= 414
+        let isRegular = containerWidth >= 375
+        return QAEngagementBarLayoutMetrics(
+            horizontalPadding: isWide ? 16 : (isRegular ? 12 : 8),
+            verticalPadding: 4,
+            sectionSpacing: isWide ? 10 : (isRegular ? 8 : 6),
+            actionSpacing: isWide ? 8 : (isRegular ? 6 : 2),
+            actionHitArea: 44,
+            authorWidth: isWide ? 132 : (isRegular ? 112 : 84),
+            iconCanvas: 32,
+            systemIconSize: 22,
+            triangleSide: 25,
+            triangleLineWidth: 1.8,
+            selectedTriangleLineWidth: 2.4,
+            badgeMaxWidth: 38,
+            badgeOffset: CGSize(width: 8, height: -12)
+        )
+    }
+}
+
+enum QAEngagementCountFormatter {
+    static func string(for count: Int) -> String {
+        let value = max(0, count)
+        if value >= 100_000_000 { return abbreviated(value, divisor: 100_000_000, suffix: "亿") }
+        if value >= 10_000 { return abbreviated(value, divisor: 10_000, suffix: "万") }
+        return String(value)
+    }
+
+    private static func abbreviated(_ value: Int, divisor: Int, suffix: String) -> String {
+        var whole = value / divisor
+        var tenths = ((value % divisor) * 10 + divisor / 2) / divisor
+        if tenths == 10 {
+            whole += 1
+            tenths = 0
+        }
+        return tenths == 0 ? "\(whole) \(suffix)" : "\(whole).\(tenths) \(suffix)"
+    }
+}
+
+struct QACollectionsSheet: View {
     @ObservedObject var store: AnswerStore
     @Environment(\.dismiss) private var dismiss
 
@@ -374,7 +514,6 @@ private struct QACollectionsSheet: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(store.activeCollectionID != nil)
                     }
                     .refreshable { await store.loadCollections(force: true) }
                 }

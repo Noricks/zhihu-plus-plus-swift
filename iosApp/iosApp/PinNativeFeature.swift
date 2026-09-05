@@ -55,6 +55,22 @@ struct PinDetailDTO: Hashable, Sendable {
     let isLiked: Bool
     let topics: [String]
     let poll: PinPollDTO?
+
+    func replacingLike(isLiked: Bool, likeCount: Int) -> Self {
+        Self(
+            id: id,
+            sourceURL: sourceURL,
+            author: author,
+            blocks: blocks,
+            createdTime: createdTime,
+            updatedTime: updatedTime,
+            likeCount: max(0, likeCount),
+            commentCount: commentCount,
+            isLiked: isLiked,
+            topics: topics,
+            poll: poll
+        )
+    }
 }
 
 protocol PinRepository: Sendable {
@@ -312,10 +328,17 @@ final class PinNativeStore: ObservableObject {
 
     let route: PinRouteDTO
     private let repository: PinRepository
+    private let offlineInteractions: OfflineInteractionCoordinator?
+    private var likeQueueRevision: UInt64 = 0
 
-    init(route: PinRouteDTO, repository: PinRepository) {
+    init(
+        route: PinRouteDTO,
+        repository: PinRepository,
+        offlineInteractions: OfflineInteractionCoordinator? = nil
+    ) {
         self.route = route
         self.repository = repository
+        self.offlineInteractions = offlineInteractions
     }
 
     func load() async {
@@ -324,7 +347,19 @@ final class PinNativeStore: ObservableObject {
         errorMessage = nil
         do {
             let loaded = try await repository.fetch(pinID: route.pinID)
-            detail = loaded
+            if let offlineInteractions {
+                let projection = offlineInteractions.overlay.pinLike(
+                    pinID: loaded.id,
+                    serverIsLiked: loaded.isLiked,
+                    serverLikeCount: loaded.likeCount
+                )
+                detail = loaded.replacingLike(
+                    isLiked: projection.value,
+                    likeCount: projection.count
+                )
+            } else {
+                detail = loaded
+            }
             Task { await repository.recordReadHistory(pinID: loaded.id) }
         } catch is CancellationError {
             isLoading = false
@@ -336,7 +371,27 @@ final class PinNativeStore: ObservableObject {
     }
 
     func toggleLike() async {
-        guard let current = detail, !isMutatingLike else { return }
+        guard let current = detail else { return }
+        if let offlineInteractions {
+            likeQueueRevision &+= 1
+            let acceptedRevision = likeQueueRevision
+            let target = !current.isLiked
+            detail = current.replacingLike(
+                isLiked: target,
+                likeCount: current.likeCount + (target ? 1 : -1)
+            )
+            do {
+                try await offlineInteractions.setPinLiked(target, pinID: current.id)
+            } catch {
+                guard likeQueueRevision == acceptedRevision,
+                      detail?.id == current.id
+                else { return }
+                detail = current
+                mutationErrorMessage = "无法保存点赞：\(error.localizedDescription)"
+            }
+            return
+        }
+        guard !isMutatingLike else { return }
         isMutatingLike = true
         mutationErrorMessage = nil
         do {
@@ -381,11 +436,16 @@ struct PinNativeView: View {
     init(
         route: PinRouteDTO,
         repository: PinRepository,
+        offlineInteractions: OfflineInteractionCoordinator? = nil,
         onOpenPerson: @escaping (PersonRoutePayload) -> Void,
         onOpenLink: @escaping (PinLinkDestination) -> Void,
         onOpenComments: @escaping (Int64) -> Void
     ) {
-        _store = StateObject(wrappedValue: PinNativeStore(route: route, repository: repository))
+        _store = StateObject(wrappedValue: PinNativeStore(
+            route: route,
+            repository: repository,
+            offlineInteractions: offlineInteractions
+        ))
         self.onOpenPerson = onOpenPerson
         self.onOpenLink = onOpenLink
         self.onOpenComments = onOpenComments
@@ -411,7 +471,7 @@ struct PinNativeView: View {
                     }
                     .padding()
                 }
-                .safeAreaInset(edge: .bottom) { actionBar(detail) }
+                .safeAreaInset(edge: .bottom, spacing: 0) { actionBar(detail) }
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
                         Menu {
@@ -521,18 +581,19 @@ struct PinNativeView: View {
     }
 
     private func actionBar(_ detail: PinDetailDTO) -> some View {
-        HStack(spacing: 24) {
-            Button { Task { await store.toggleLike() } } label: {
-                Label("\(detail.likeCount)", systemImage: detail.isLiked ? "hand.thumbsup.fill" : "hand.thumbsup")
+        NativeFullBleedBottomBar {
+            HStack(spacing: 24) {
+                Button { Task { await store.toggleLike() } } label: {
+                    Label("\(detail.likeCount)", systemImage: detail.isLiked ? "hand.thumbsup.fill" : "hand.thumbsup")
+                }
+                .disabled(store.isMutatingLike)
+                Button { onOpenComments(detail.id) } label: {
+                    Label("\(detail.commentCount)", systemImage: "bubble.left")
+                }
             }
-            .disabled(store.isMutatingLike)
-            Button { onOpenComments(detail.id) } label: {
-                Label("\(detail.commentCount)", systemImage: "bubble.left")
-            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 10)
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 10)
-        .background(.bar)
     }
 
     private func metadata(_ detail: PinDetailDTO) -> String {

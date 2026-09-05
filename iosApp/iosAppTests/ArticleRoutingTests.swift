@@ -23,6 +23,17 @@ final class ArticleRoutingTests: XCTestCase {
         XCTAssertEqual(NativeShellRoute.comments(route), .comments(route))
     }
 
+    func testCommentSheetPresentationRetainsRouteAndSourceTab() {
+        let route = CommentThreadRouteDTO(
+            subject: .answer(42),
+            initialLevel: .replies(rootCommentID: "root")
+        )
+        let presentation = NativeCommentSheetPresentation(route: route, sourceTab: .home)
+
+        XCTAssertEqual(presentation.route, route)
+        XCTAssertEqual(presentation.sourceTab, .home)
+    }
+
     func testSystemSearchTargetsSearchTabAndPreservesQuery() {
         let target = NativeSearchTabNavigationTarget(query: " SwiftUI ")
 

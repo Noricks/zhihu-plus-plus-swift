@@ -14,6 +14,64 @@ enum HomeRecommendationSource: String, CaseIterable, Codable, Identifiable, Send
     }
 }
 
+struct HomeRecommendationSourceTogglePresentation: Equatable, Sendable {
+    static let accessibilityLabel = "推荐来源"
+    static let accessibilityIdentifier = "home_recommendation_source_toggle"
+
+    let visibleLabel: String
+    let accessibilityValue: String
+    let accessibilityHint: String
+}
+
+enum HomeRecommendationSourceTogglePolicy {
+    static func next(after source: HomeRecommendationSource) -> HomeRecommendationSource {
+        switch source {
+        case .app: return .web
+        case .web: return .app
+        }
+    }
+
+    static func presentation(
+        for source: HomeRecommendationSource
+    ) -> HomeRecommendationSourceTogglePresentation {
+        let nextSource = next(after: source)
+        return HomeRecommendationSourceTogglePresentation(
+            visibleLabel: source == .app ? "App" : "Web",
+            accessibilityValue: source.title,
+            accessibilityHint: "轻点切换到 \(nextSource.title)"
+        )
+    }
+
+    static func isVisible(selectedChannel: HomeChannel) -> Bool {
+        selectedChannel == .recommendation
+    }
+
+    static func permittedSource(
+        _ requestedSource: HomeRecommendationSource,
+        isSignedIn: Bool
+    ) -> HomeRecommendationSource {
+        requestedSource == .web && !isSignedIn ? .app : requestedSource
+    }
+
+    static func canSwitch(
+        from source: HomeRecommendationSource,
+        isSignedIn: Bool
+    ) -> Bool {
+        let destination = next(after: source)
+        return permittedSource(destination, isSignedIn: isSignedIn) == destination
+    }
+
+    static func accessibilityHint(
+        for source: HomeRecommendationSource,
+        isSignedIn: Bool
+    ) -> String {
+        guard canSwitch(from: source, isSignedIn: isSignedIn) else {
+            return "登录后可切换到 Web 接口"
+        }
+        return presentation(for: source).accessibilityHint
+    }
+}
+
 struct HomeRecommendationRefreshConfiguration: Equatable, Sendable {
     static let targetItemRange = 6 ... 20
     static let requestLimit = 10

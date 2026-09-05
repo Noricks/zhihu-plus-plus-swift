@@ -16,6 +16,7 @@ final class CommentHostModel: ObservableObject, Identifiable {
         route: CommentThreadRouteDTO,
         accountStore: AccountJSONStore,
         repository: CommentRepository? = nil,
+        offlineInteractions: OfflineInteractionCoordinator? = nil,
         onPersonNavigate: @escaping (PersonNavigationIntent) -> Void
     ) {
         let sessionID = CommentSessionID()
@@ -29,6 +30,7 @@ final class CommentHostModel: ObservableObject, Identifiable {
                 client: ZhihuAPIClient(accountStore: accountStore)
             ),
             sessionID: sessionID,
+            offlineInteractions: offlineInteractions,
             onOpenPerson: { payload in openPerson?(payload) }
         )
         openPerson = { [weak self] payload in self?.presentPerson(payload) }
@@ -65,12 +67,19 @@ final class CommentHostModel: ObservableObject, Identifiable {
 @available(iOS 16.0, *)
 struct CommentNavigationPage: View {
     @ObservedObject var model: CommentHostModel
+    let close: (() -> Void)?
+
+    init(model: CommentHostModel, close: (() -> Void)? = nil) {
+        self.model = model
+        self.close = close
+    }
 
     var body: some View {
         CommentThreadContainer(
             store: model.store,
             personModel: model.personModel,
-            personBindingChanged: model.personBindingChanged
+            personBindingChanged: model.personBindingChanged,
+            close: close
         )
         .accessibilityIdentifier("comment_navigation_page")
     }
@@ -81,9 +90,10 @@ private struct CommentThreadContainer: View {
     @ObservedObject var store: CommentSessionStore
     let personModel: PersonHostModel?
     let personBindingChanged: (Bool) -> Void
+    let close: (() -> Void)?
 
     var body: some View {
-        CommentLevelView(store: store, level: .root, close: nil)
+        CommentLevelView(store: store, level: .root, close: close)
             .navigationDestination(isPresented: rootPersonBinding) {
                 if let personModel { PersonNativeView(model: personModel) }
             }
@@ -268,6 +278,34 @@ private struct CommentSheetPresentationModifier: ViewModifier {
     }
 }
 
+enum CommentRootSheetLayout {
+    static let compactFraction: CGFloat = 0.82
+    static let cornerRadius: CGFloat = 24
+
+    static func compactHeight(in availableHeight: CGFloat) -> CGFloat {
+        max(0, availableHeight) * compactFraction
+    }
+}
+
+struct CommentRootSheetPresentationModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 16.4, *) {
+            content
+                .presentationDetents([.fraction(CommentRootSheetLayout.compactFraction), .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(CommentRootSheetLayout.cornerRadius)
+                .presentationBackground(Color(uiColor: .systemBackground))
+        } else if #available(iOS 16, *) {
+            content
+                .presentationDetents([.fraction(CommentRootSheetLayout.compactFraction), .large])
+                .presentationDragIndicator(.visible)
+        } else {
+            content
+        }
+    }
+}
+
 @available(iOS 16.0, *)
 private struct CommentLevelView: View {
     @ObservedObject var store: CommentSessionStore
@@ -309,7 +347,7 @@ private struct CommentLevelView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if let close {
-                ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(placement: .confirmationAction) {
                     Button(action: close) {
                         Image(systemName: "xmark")
                     }
@@ -625,14 +663,15 @@ private struct CommentComposerBar: View {
     @FocusState private var isDraftFocused: Bool
 
     var body: some View {
-        Group {
-            if store.composerPresentation.isActive(for: level) {
-                activeComposer
-            } else {
-                collapsedComposer
+        NativeFullBleedBottomBar {
+            Group {
+                if store.composerPresentation.isActive(for: level) {
+                    activeComposer
+                } else {
+                    collapsedComposer
+                }
             }
         }
-        .background(CommentComposerBackground())
         .onChange(of: store.composerPresentation) { presentation in
             isDraftFocused = presentation.isActive(for: level)
         }
@@ -864,16 +903,6 @@ private enum CommentPhotoPickerError: LocalizedError {
     case unreadableImage
 
     var errorDescription: String? { "无法读取所选图片" }
-}
-
-private struct CommentComposerBackground: View {
-    var body: some View {
-        Color(uiColor: .secondarySystemBackground)
-            .ignoresSafeArea(edges: .bottom)
-            .overlay(alignment: .top) {
-                Divider()
-            }
-    }
 }
 
 private struct CommentRichText: View {

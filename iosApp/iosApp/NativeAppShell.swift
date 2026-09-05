@@ -16,6 +16,7 @@ enum NativeShellRoute: Hashable {
     case writeAnswer(WriteAnswerRouteDTO)
     case writePin
     case account
+    case offlineReading
     case collections(userToken: String)
     case collectionContent(String)
     case special(String)
@@ -41,6 +42,7 @@ enum NativeShellRoute: Hashable {
         case .writeAnswer: return "write_answer"
         case .writePin: return "write_pin"
         case .account: return "account"
+        case .offlineReading: return "offline_reading"
         case .collections: return "collections"
         case .collectionContent: return "collection_content"
         case .special: return "special"
@@ -263,6 +265,12 @@ private struct NativeMediaPresentation: Identifiable, Hashable {
     let initialIndex: Int
 }
 
+struct NativeCommentSheetPresentation: Identifiable {
+    let id = UUID()
+    let route: CommentThreadRouteDTO
+    let sourceTab: NativeAppTab
+}
+
 @available(iOS 16.0, *)
 struct NativeAppShell: View {
     let hostModel: HostModel
@@ -272,6 +280,8 @@ struct NativeAppShell: View {
     @ObservedObject private var account: NativeAccountStore
     @ObservedObject private var notifications: NativeNotificationStore
     @ObservedObject private var notificationPreferences: NativeNotificationPreferences
+    @ObservedObject private var offlineInteractions: OfflineInteractionCoordinator
+    @ObservedObject private var flightOfflineStore: FlightOfflinePackStore
 
     @StateObject private var navigation: NativeTabNavigationState
     @StateObject private var recommendationStore: HomeFeedNativeStore
@@ -282,6 +292,7 @@ struct NativeAppShell: View {
     @State private var selectedTab: NativeAppTab
     @State private var selectedHomeChannelID: HomeChannel.ID
     @State private var mediaPresentation: NativeMediaPresentation?
+    @State private var commentPresentation: NativeCommentSheetPresentation?
     @State private var shareURL: URL?
     @State private var pendingShareChoiceURL: URL?
     @State private var showsCopiedLinkConfirmation = false
@@ -290,6 +301,7 @@ struct NativeAppShell: View {
     @State private var searchRootRoute = SearchRouteDTO()
     @State private var searchFocusRequestToken: UInt = 0
     @State private var clipboardInspectionArmed = false
+    @State private var recommendationSourceChangeTask: Task<Void, Never>?
 
     init(hostModel: HostModel, isAppUnlocked: Bool) {
         self.hostModel = hostModel
@@ -298,6 +310,8 @@ struct NativeAppShell: View {
         _account = ObservedObject(wrappedValue: hostModel.account)
         _notifications = ObservedObject(wrappedValue: hostModel.notifications)
         _notificationPreferences = ObservedObject(wrappedValue: hostModel.notificationPreferences)
+        _offlineInteractions = ObservedObject(wrappedValue: hostModel.offlineInteractions)
+        _flightOfflineStore = ObservedObject(wrappedValue: hostModel.flightOfflineStore)
         _navigation = StateObject(wrappedValue: NativeTabNavigationState(
             diagnostics: hostModel.performanceDiagnostics.client
         ))
@@ -310,6 +324,8 @@ struct NativeAppShell: View {
             cacheAccountID: {
                 hostModel.account.identity?.id
             },
+            automaticallyPrefetchesFirstContinuation: true,
+            thumbnailPrefetcher: URLSessionFeedThumbnailPrefetcher(),
             diagnostics: hostModel.performanceDiagnostics.client
         ))
         _followingStore = StateObject(wrappedValue: FollowNativeStore(repository: hostModel.followRepository))
@@ -320,9 +336,14 @@ struct NativeAppShell: View {
     }
 
     var body: some View {
-        tabBarBehavior(
-            appTabView
-        )
+        ZStack {
+            NativeZhihuVisualStyle.backgroundColor
+                .ignoresSafeArea()
+
+            tabBarBehavior(
+                appTabView
+            )
+        }
         .background(
             NativeTabTapObserver(
                 isEnabled: true,
@@ -377,6 +398,14 @@ struct NativeAppShell: View {
         .fullScreenCover(item: $mediaPresentation) { presentation in
             NativeMediaGallery(urls: presentation.urls, initialIndex: presentation.initialIndex)
         }
+        .sheet(item: $commentPresentation) { presentation in
+            NativeCommentSheetRouteView(
+                route: presentation.route,
+                accountStore: hostModel.accountStore,
+                offlineInteractions: offlineInteractions,
+                onPersonNavigate: { handlePersonIntent($0, in: presentation.sourceTab) }
+            )
+        }
         .onChange(of: selectedTab) { _ in
             homeTabDoubleTapGate.cancel()
         }
@@ -392,6 +421,7 @@ struct NativeAppShell: View {
         .onChange(of: scenePhase) { phase in
             switch phase {
             case .active:
+                offlineInteractions.applicationDidBecomeActive()
                 inspectClipboardAfterActivationIfNeeded()
             case .inactive, .background:
                 clipboardInspectionArmed = true
@@ -400,6 +430,8 @@ struct NativeAppShell: View {
             }
         }
         .onChange(of: account.identity.map { "\($0.id)|\($0.urlToken ?? "")" }) { _ in
+            fallBackToGuestRecommendationSourceIfNeeded()
+            commentPresentation = nil
             navigation.resetAll()
             recommendationStore.accountDidChange()
             followingStore.accountDidChange()
@@ -422,11 +454,18 @@ struct NativeAppShell: View {
                 }
             }
         }
-        .onChange(of: preferences.homeRecommendationSource) { _ in
-            Task { await recommendationStore.recommendationSourceDidChange() }
+        .onChange(of: account.currentAccountID) { _ in
+            flightOfflineStore.accountDidChange()
+            offlineInteractions.accountDidChange()
+        }
+        .onChange(of: preferences.homeRecommendationSource) { source in
+            synchronizeRecommendationSource(source)
         }
         .task {
             if case .loading = account.state { account.reloadFromKeychain() }
+            offlineInteractions.start()
+            await flightOfflineStore.reload()
+            fallBackToGuestRecommendationSourceIfNeeded()
             if account.isSignedIn { await notifications.refreshUnreadCounts() }
             SystemNavigationRequestCenter.shared.installHandler(handleSystemNavigation)
             clipboardInspectionArmed = true
@@ -470,6 +509,8 @@ struct NativeAppShell: View {
                     tabNavigationStack(for: .search)
                 }
             }
+            .toolbarBackground(NativeZhihuVisualStyle.backgroundColor, for: .tabBar)
+            .toolbarBackground(.visible, for: .tabBar)
         } else {
             TabView(selection: tabSelection) {
                 ForEach(NativeAppTab.fixedBottomBarTabs) { tab in
@@ -478,6 +519,8 @@ struct NativeAppShell: View {
                         .tag(tab)
                 }
             }
+            .toolbarBackground(NativeZhihuVisualStyle.backgroundColor, for: .tabBar)
+            .toolbarBackground(.visible, for: .tabBar)
         }
     }
 
@@ -515,16 +558,18 @@ struct NativeAppShell: View {
                 followingStore: followingStore,
                 hotStore: hotStore,
                 dailyStore: dailyStore,
+                recommendationSource: preferences.homeRecommendationSource,
+                isSignedIn: account.isSignedIn,
                 doubleTapRefreshRequest: homeDoubleTapRefreshRequest,
                 isOperationallyVisible: isAppUnlocked
                     && selectedTab == .home
                     && navigation.isAtRoot(in: .home),
-                notificationUnreadCount: notifications.unreadCount,
+                onRecommendationSourceChange: {
+                    preferences.setHomeRecommendationSource($0)
+                },
                 onOpenFeed: openFeed,
                 onOpenPerson: { navigate(.person($0)) },
-                onOpenDaily: { handleDailyDestination($0, in: .home) },
-                onOpenCreation: { navigate(.writePin) },
-                onOpenNotifications: { navigate(.notifications) }
+                onOpenDaily: { handleDailyDestination($0, in: .home) }
             )
         case .follow, .hot, .daily:
             EmptyView()
@@ -545,7 +590,11 @@ struct NativeAppShell: View {
                 NativeSignedOutLibraryView(title: "登录后查看收藏夹", openLogin: hostModel.openLogin)
             }
         case .account:
-            NativeAccountView(store: account, actions: accountActions)
+            NativeAccountView(
+                store: account,
+                actions: accountActions,
+                offlineReadingStatus: offlineAccountRowStatus
+            )
         case .search:
             SearchNativeView(
                 route: searchRootRoute,
@@ -562,6 +611,29 @@ struct NativeAppShell: View {
         }
     }
 
+    private func synchronizeRecommendationSource(_ requestedSource: HomeRecommendationSource) {
+        recommendationSourceChangeTask?.cancel()
+        let source = HomeRecommendationSourceTogglePolicy.permittedSource(
+            requestedSource,
+            isSignedIn: account.isSignedIn
+        )
+        guard source == requestedSource else {
+            preferences.setHomeRecommendationSource(source)
+            return
+        }
+
+        recommendationSourceChangeTask = Task { @MainActor in
+            await recommendationStore.recommendationSourceDidChange()
+        }
+    }
+
+    private func fallBackToGuestRecommendationSourceIfNeeded() {
+        guard !account.isSignedIn,
+              preferences.homeRecommendationSource == .web
+        else { return }
+        preferences.setHomeRecommendationSource(.app)
+    }
+
     @ViewBuilder
     private func destination(_ route: NativeShellRoute, in tab: NativeAppTab) -> some View {
         Group {
@@ -572,6 +644,7 @@ struct NativeAppShell: View {
                     repository: hostModel.questionAnswerRepository,
                     openedHistory: hostModel.answerOpenedHistory,
                     diagnostics: hostModel.performanceDiagnostics.client,
+                    offlineInteractions: offlineInteractions,
                     onNavigate: { handleQAIntent($0, in: tab) }
                 )
         case let .question(route):
@@ -604,10 +677,11 @@ struct NativeAppShell: View {
             PinNativeView(
                 route: route,
                 repository: hostModel.pinRepository,
+                offlineInteractions: offlineInteractions,
                 onOpenPerson: { navigate(.person($0), in: tab) },
                 onOpenLink: handlePinLink,
                 onOpenComments: {
-                    navigate(.comments(.init(subject: .pin($0))), in: tab)
+                    presentComments(.init(subject: .pin($0)), in: tab)
                 }
             )
         case let .video(route):
@@ -620,6 +694,7 @@ struct NativeAppShell: View {
             NativeCommentNavigationRouteView(
                 route: route,
                 accountStore: hostModel.accountStore,
+                offlineInteractions: offlineInteractions,
                 onPersonNavigate: { handlePersonIntent($0, in: tab) }
             )
         case let .search(route):
@@ -650,7 +725,27 @@ struct NativeAppShell: View {
                 onPublished: { navigation.replaceTop(with: .pin(.init(pinID: $0)), in: tab) }
             )
         case .account:
-            NativeAccountView(store: account, actions: accountActions)
+            NativeAccountView(
+                store: account,
+                actions: accountActions,
+                offlineReadingStatus: offlineAccountRowStatus
+            )
+        case .offlineReading:
+            if account.isSignedIn {
+                FlightOfflineReadingView(
+                    store: flightOfflineStore,
+                    pendingInteractionCount: offlineInteractions.overlay.pendingCount,
+                    interactionStatus: offlineInteractionStatus,
+                    onRetryInteractions: offlineInteractions.retryNow,
+                    onOpenQuestion: { navigate(.question($0), in: tab) },
+                    onOpenAnswer: { navigate(.answer($0), in: tab) }
+                )
+            } else {
+                NativeSignedOutLibraryView(
+                    title: "登录后准备离线内容",
+                    openLogin: hostModel.openLogin
+                )
+            }
         case let .collections(token):
             NativeCollectionsView(userToken: token, repository: hostModel.libraryRepository, onOpenContent: openContent)
         case let .collectionContent(id):
@@ -703,6 +798,28 @@ struct NativeAppShell: View {
                 navigate(.person(payload))
             }
         )
+    }
+
+    private var offlineAccountRowStatus: String? {
+        if offlineInteractions.overlay.pendingCount > 0 {
+            return "\(offlineInteractions.overlay.pendingCount) 项待同步"
+        }
+        return flightOfflineStore.accountRowStatus
+    }
+
+    private var offlineInteractionStatus: String? {
+        switch offlineInteractions.state {
+        case .stopped, .idle:
+            return nil
+        case .syncing:
+            return "正在同步点赞和收藏"
+        case .waitingForNetwork:
+            return "等待网络连接；恢复联网后会自动同步。"
+        case let .waitingForRetry(date):
+            return "同步暂未成功，将于 \(date.formatted(date: .omitted, time: .shortened)) 重试。"
+        case let .failed(message):
+            return message
+        }
     }
 
     private func navigate(_ route: NativeShellRoute, in tab: NativeAppTab? = nil) {
@@ -800,7 +917,7 @@ struct NativeAppShell: View {
         case let .answer(route): navigate(.answer(route), in: tab)
         case let .writeAnswer(route): navigate(.writeAnswer(route), in: tab)
         case let .comments(route), let .segmentComments(route):
-            navigate(.comments(route), in: tab)
+            presentComments(route, in: tab)
         case let .images(urls, index):
             guard !urls.isEmpty else { return }
             mediaPresentation = .init(urls: urls, initialIndex: index)
@@ -849,6 +966,10 @@ struct NativeAppShell: View {
 
     private func handlePersonIntent(_ intent: PersonNavigationIntent, in tab: NativeAppTab) {
         navigate(intent.nativeShellRoute, in: tab)
+    }
+
+    private func presentComments(_ route: CommentThreadRouteDTO, in tab: NativeAppTab) {
+        commentPresentation = NativeCommentSheetPresentation(route: route, sourceTab: tab)
     }
 
     private func handleCreationIntent(_ intent: CreationSystemIntent, retry: @escaping () async -> Void) {
@@ -1134,15 +1255,49 @@ private struct NativePersonConnectionsRouteView: View {
 private struct NativeCommentNavigationRouteView: View {
     @StateObject private var model: CommentHostModel
 
-    init(route: CommentThreadRouteDTO, accountStore: AccountJSONStore, onPersonNavigate: @escaping (PersonNavigationIntent) -> Void) {
+    init(
+        route: CommentThreadRouteDTO,
+        accountStore: AccountJSONStore,
+        offlineInteractions: OfflineInteractionCoordinator? = nil,
+        onPersonNavigate: @escaping (PersonNavigationIntent) -> Void
+    ) {
         _model = StateObject(wrappedValue: CommentHostModel(
             route: route,
             accountStore: accountStore,
+            offlineInteractions: offlineInteractions,
             onPersonNavigate: onPersonNavigate
         ))
     }
 
     var body: some View { CommentNavigationPage(model: model) }
+}
+
+@available(iOS 16.0, *)
+private struct NativeCommentSheetRouteView: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var model: CommentHostModel
+
+    init(
+        route: CommentThreadRouteDTO,
+        accountStore: AccountJSONStore,
+        offlineInteractions: OfflineInteractionCoordinator? = nil,
+        onPersonNavigate: @escaping (PersonNavigationIntent) -> Void
+    ) {
+        _model = StateObject(wrappedValue: CommentHostModel(
+            route: route,
+            accountStore: accountStore,
+            offlineInteractions: offlineInteractions,
+            onPersonNavigate: onPersonNavigate
+        ))
+    }
+
+    var body: some View {
+        NavigationStack {
+            CommentNavigationPage(model: model, close: { dismiss() })
+        }
+        .modifier(CommentRootSheetPresentationModifier())
+        .accessibilityIdentifier("comment_root_sheet")
+    }
 }
 
 private struct NativeSharePresentation: Identifiable {
