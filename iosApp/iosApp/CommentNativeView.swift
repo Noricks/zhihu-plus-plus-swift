@@ -16,6 +16,7 @@ final class CommentHostModel: ObservableObject, Identifiable {
         route: CommentThreadRouteDTO,
         accountStore: AccountJSONStore,
         repository: CommentRepository? = nil,
+        offlineInteractions: OfflineInteractionCoordinator? = nil,
         onPersonNavigate: @escaping (PersonNavigationIntent) -> Void
     ) {
         let sessionID = CommentSessionID()
@@ -29,6 +30,7 @@ final class CommentHostModel: ObservableObject, Identifiable {
                 client: ZhihuAPIClient(accountStore: accountStore)
             ),
             sessionID: sessionID,
+            offlineInteractions: offlineInteractions,
             onOpenPerson: { payload in openPerson?(payload) }
         )
         openPerson = { [weak self] payload in self?.presentPerson(payload) }

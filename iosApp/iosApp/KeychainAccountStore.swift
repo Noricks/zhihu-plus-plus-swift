@@ -15,9 +15,25 @@ struct NativeSavedAccountSummary: Identifiable, Codable, Equatable, Hashable, Se
     let avatarURL: URL?
 }
 
+struct MultipleAccountJSONSnapshot: Equatable, Sendable {
+    let accountID: String?
+    let accountJSON: String?
+}
+
+private func normalizedMultipleAccountID(_ accountID: String?) -> String? {
+    guard let accountID else { return nil }
+    let normalized = accountID.trimmingCharacters(in: .whitespacesAndNewlines)
+    return normalized.isEmpty ? nil : normalized
+}
+
 protocol MultipleAccountJSONStore: AccountJSONStore {
     func listAccounts() throws -> [NativeSavedAccountSummary]
     func currentAccountID() throws -> String?
+    func currentAccountSnapshot() throws -> MultipleAccountJSONSnapshot
+    func updateCurrentAccount(
+        expectedAccountID: String?,
+        _ transform: (String?) throws -> String?
+    ) throws
     func switchAccount(to accountID: String) throws
     func deleteAccount(_ accountID: String) throws
     func clearCurrentAccount() throws
@@ -26,6 +42,7 @@ protocol MultipleAccountJSONStore: AccountJSONStore {
 enum MultipleAccountStoreError: LocalizedError, Equatable {
     case accountNotFound
     case cannotDeleteCurrentAccount
+    case accountChanged
 
     var errorDescription: String? {
         switch self {
@@ -33,6 +50,36 @@ enum MultipleAccountStoreError: LocalizedError, Equatable {
             return "找不到要操作的账号"
         case .cannotDeleteCurrentAccount:
             return "不能删除当前正在使用的账号"
+        case .accountChanged:
+            return "操作期间当前账号已变化"
+        }
+    }
+}
+
+extension MultipleAccountJSONStore {
+    func currentAccountSnapshot() throws -> MultipleAccountJSONSnapshot {
+        let accountID = try currentAccountID()
+        let accountJSON = try load()
+        guard try currentAccountID() == accountID else {
+            throw MultipleAccountStoreError.accountChanged
+        }
+        return MultipleAccountJSONSnapshot(accountID: accountID, accountJSON: accountJSON)
+    }
+
+    func updateCurrentAccount(
+        expectedAccountID: String?,
+        _ transform: (String?) throws -> String?
+    ) throws {
+        guard normalizedMultipleAccountID(try currentAccountID())
+            == normalizedMultipleAccountID(expectedAccountID)
+        else {
+            throw MultipleAccountStoreError.accountChanged
+        }
+        try update(transform)
+        guard normalizedMultipleAccountID(try currentAccountID())
+            == normalizedMultipleAccountID(expectedAccountID)
+        else {
+            throw MultipleAccountStoreError.accountChanged
         }
     }
 }
@@ -116,6 +163,26 @@ final class KeychainAccountStore: MultipleAccountJSONStore {
         }
     }
 
+    func updateCurrentAccount(
+        expectedAccountID: String?,
+        _ transform: (String?) throws -> String?
+    ) throws {
+        try synchronized {
+            var vault = try loadVaultUnlocked().envelope
+            guard normalizedMultipleAccountID(vault.currentAccountID)
+                == normalizedMultipleAccountID(expectedAccountID)
+            else {
+                throw MultipleAccountStoreError.accountChanged
+            }
+            if let updated = try transform(vault.currentSessionJSON) {
+                upsert(updated, into: &vault)
+                try saveVaultUnlocked(vault)
+            } else {
+                try clearCurrentAccountUnlocked(vault: &vault)
+            }
+        }
+    }
+
     func listAccounts() throws -> [NativeSavedAccountSummary] {
         try synchronized {
             let vault = try loadVaultUnlocked()
@@ -138,6 +205,19 @@ final class KeychainAccountStore: MultipleAccountJSONStore {
                 try saveVaultUnlocked(vault.envelope)
             }
             return vault.envelope.currentAccountID
+        }
+    }
+
+    func currentAccountSnapshot() throws -> MultipleAccountJSONSnapshot {
+        try synchronized {
+            let vault = try loadVaultUnlocked()
+            if vault.requiresPersistence {
+                try saveVaultUnlocked(vault.envelope)
+            }
+            return MultipleAccountJSONSnapshot(
+                accountID: vault.envelope.currentAccountID,
+                accountJSON: vault.envelope.currentSessionJSON
+            )
         }
     }
 

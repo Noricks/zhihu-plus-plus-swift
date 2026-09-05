@@ -514,7 +514,6 @@ struct QACollectionsSheet: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(store.activeCollectionID != nil)
                     }
                     .refreshable { await store.loadCollections(force: true) }
                 }

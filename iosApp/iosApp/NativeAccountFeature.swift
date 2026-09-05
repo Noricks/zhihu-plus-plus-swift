@@ -213,6 +213,8 @@ final class NativeAccountStore: ObservableObject {
     @Published private(set) var deletingAccountID: String?
 
     private let repository: NativeAccountRepository
+    private var accountRemovalHandler: (String) -> Void = { _ in }
+
     init(repository: NativeAccountRepository) {
         self.repository = repository
     }
@@ -255,7 +257,9 @@ final class NativeAccountStore: ObservableObject {
         isSigningOut = true
         defer { isSigningOut = false }
         do {
+            let removedAccountID = currentAccountID
             try repository.signOut()
+            if let removedAccountID { accountRemovalHandler(removedAccountID) }
             state = .signedOut
             try reloadAccountList()
         } catch {
@@ -284,10 +288,15 @@ final class NativeAccountStore: ObservableObject {
         defer { deletingAccountID = nil }
         do {
             try repository.deleteAccount(accountID)
+            accountRemovalHandler(accountID)
             try reloadAccountList()
         } catch {
             state = .failed(message: error.localizedDescription, retainedIdentity: identity)
         }
+    }
+
+    func setAccountRemovalHandler(_ handler: @escaping (String) -> Void) {
+        accountRemovalHandler = handler
     }
 
     private func apply(_ account: NativeStoredAccount) {
@@ -314,9 +323,20 @@ struct NativeAccountActions {
 struct NativeAccountView: View {
     @ObservedObject var store: NativeAccountStore
     let actions: NativeAccountActions
+    let offlineReadingStatus: String?
 
     @State private var confirmsSignOut = false
     @State private var titleCollapseProgress: CGFloat = 0
+
+    init(
+        store: NativeAccountStore,
+        actions: NativeAccountActions,
+        offlineReadingStatus: String? = nil
+    ) {
+        self.store = store
+        self.actions = actions
+        self.offlineReadingStatus = offlineReadingStatus
+    }
 
     var body: some View {
         List {
@@ -481,6 +501,17 @@ struct NativeAccountView: View {
 
     private func librarySection(identity: NativeAccountIdentity) -> some View {
         Section("我的内容") {
+            NavigationLink(value: NativeShellRoute.offlineReading) {
+                HStack {
+                    Label("离线阅读", systemImage: "airplane")
+                    Spacer()
+                    if let offlineReadingStatus {
+                        Text(offlineReadingStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
             if let token = identity.collectionToken {
                 NavigationLink(value: NativeShellRoute.collections(userToken: token)) {
                     Label("收藏夹", systemImage: "bookmark")

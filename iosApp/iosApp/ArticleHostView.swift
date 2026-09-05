@@ -12,6 +12,7 @@ struct ArticleHostView: View {
         repository: QuestionAnswerRepository,
         openedHistory: AnswerOpenedHistory,
         diagnostics: PerformanceDiagnosticsClient = .disabled,
+        offlineInteractions: OfflineInteractionCoordinator? = nil,
         onNavigate: @escaping (QANavigationIntent) -> Void
     ) {
         _pager = StateObject(
@@ -19,7 +20,8 @@ struct ArticleHostView: View {
                 route: route,
                 repository: repository,
                 openedHistory: openedHistory,
-                diagnostics: diagnostics
+                diagnostics: diagnostics,
+                offlineInteractions: offlineInteractions
             )
         )
         self.onNavigate = onNavigate

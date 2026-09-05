@@ -86,6 +86,8 @@ final class HostModel: ObservableObject {
     let specialRepository: NativeSpecialRepository
     let columnRepository: NativeColumnRepository
     let homeRecommendationCachePersistence: HomeRecommendationCachePersisting
+    let flightOfflinePackPersistence: FlightOfflinePackPersisting
+    let offlineInteractions: OfflineInteractionCoordinator
     let homeRepository: HomeFeedRepository
     let followRepository: FollowRepository
     let hotRepository: HotFeedRepository
@@ -99,6 +101,19 @@ final class HostModel: ObservableObject {
     let systemSettings: NativeSystemIntegrationSettings
     let performanceDiagnostics: NativePerformanceDiagnosticsController
     let appLock: NativeAppLockCoordinator
+
+    lazy var flightOfflineStore = FlightOfflinePackStore(
+        homeRepository: homeRepository,
+        questionAnswerRepository: questionAnswerRepository,
+        persistence: flightOfflinePackPersistence,
+        accountID: { [weak self] in self?.account.currentAccountID },
+        recommendationSource: { [weak self] in
+            self?.preferences.homeRecommendationSource ?? .app
+        },
+        clearCachedResponses: { [apiClient] accountID in
+            try await apiClient.clearCachedResponses(forAccountID: accountID)
+        }
+    )
 
     private let externalURLCoordinator: ExternalURLCoordinator
     private var riskRetries: [String: () async -> Void] = [:]
@@ -118,6 +133,26 @@ final class HostModel: ObservableObject {
             accountStore: accountStore,
             diagnostics: performanceDiagnostics.client
         )
+        let outboxURL = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0]
+            .appendingPathComponent("OfflineInteractionOutbox", isDirectory: true)
+            .appendingPathComponent("outbox-v1.json", isDirectory: false)
+        let interactionOutbox = DurableOfflineInteractionOutbox(
+            storage: JSONFileOfflineInteractionOutboxStorage(fileURL: outboxURL),
+            executor: ZhihuOfflineInteractionExecutor(client: client)
+        )
+        let offlineInteractions = OfflineInteractionCoordinator(
+            outbox: interactionOutbox,
+            accountID: {
+                if let multipleAccountStore = accountStore as? MultipleAccountJSONStore {
+                    return try multipleAccountStore.currentAccountID()
+                }
+                return try NativeAccountCodec.decode(accountStore.load()).identity?.id
+            }
+        )
+        let flightOfflinePackPersistence = FileFlightOfflinePackPersistence()
         let notificationPreferences = NativeNotificationPreferences(defaults: defaults)
         let systemSettings = NativeSystemIntegrationSettings(defaults: defaults)
 
@@ -140,6 +175,8 @@ final class HostModel: ObservableObject {
         homeRecommendationCachePersistence = FileHomeRecommendationCachePersistence(
             diagnostics: performanceDiagnostics.client
         )
+        self.flightOfflinePackPersistence = flightOfflinePackPersistence
+        self.offlineInteractions = offlineInteractions
         homeRepository = URLSessionHomeFeedRepository(
             client: client,
             diagnostics: performanceDiagnostics.client
@@ -157,6 +194,15 @@ final class HostModel: ObservableObject {
         self.performanceDiagnostics = performanceDiagnostics
         appLock = NativeAppLockCoordinator(storedPreference: systemSettings.appLock)
         self.externalURLCoordinator = externalURLCoordinator
+        account.setAccountRemovalHandler { accountID in
+            Task { @MainActor in
+                try? await offlineInteractions.removeAll(accountID: accountID)
+                try? await client.clearCachedResponses(forAccountID: accountID)
+                _ = try? await Task.detached(priority: .utility) {
+                    try flightOfflinePackPersistence.remove(accountID: accountID)
+                }.value
+            }
+        }
     }
 
     func openLogin() {

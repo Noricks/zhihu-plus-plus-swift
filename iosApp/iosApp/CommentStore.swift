@@ -24,6 +24,7 @@ final class CommentSessionStore: ObservableObject {
     @Published private(set) var composerPresentation: CommentComposerPresentation = .hidden
 
     private let repository: CommentRepository
+    private let offlineInteractions: OfflineInteractionCoordinator?
     private let onOpenPerson: (PersonRoutePayload) -> Void
     private var anchors: [CommentLevelKey: CommentScrollAnchor] = [:]
     private var drafts: [CommentLevelKey: CommentComposerDraft] = [:]
@@ -37,10 +38,12 @@ final class CommentSessionStore: ObservableObject {
         route: CommentThreadRouteDTO,
         repository: CommentRepository,
         sessionID: CommentSessionID = CommentSessionID(),
+        offlineInteractions: OfflineInteractionCoordinator? = nil,
         onOpenPerson: @escaping (PersonRoutePayload) -> Void
     ) {
         self.route = route
         self.repository = repository
+        self.offlineInteractions = offlineInteractions
         self.sessionID = sessionID
         self.onOpenPerson = onOpenPerson
         let rootKey = CommentPageAcceptanceKey(sessionID: sessionID, level: .root, generation: 0)
@@ -200,21 +203,38 @@ final class CommentSessionStore: ObservableObject {
             targetIsLiked: !current.isLiked
         )
         page.activeLikeMutation = mutation
+        if offlineInteractions != nil {
+            page.items = replacingComment(commentID, in: page.items) { comment in
+                comment.replacingLikeState(
+                    isLiked: mutation.targetIsLiked,
+                    likeCount: comment.likeCount + (mutation.targetIsLiked ? 1 : -1)
+                )
+            }
+        }
         pages[level] = page
         likeTasks[level]?.cancel()
         likeTasks[level] = Task { [weak self] in
             guard let self else { return }
             do {
-                try await repository.setLiked(mutation.targetIsLiked, commentID: commentID)
-                guard accepts(mutation, level: level), var acceptedPage = pages[level] else { return }
-                acceptedPage.items = replacingComment(
-                    commentID,
-                    in: acceptedPage.items
-                ) { comment in
-                    comment.replacingLikeState(
-                        isLiked: mutation.targetIsLiked,
-                        likeCount: comment.likeCount + (mutation.targetIsLiked ? 1 : -1)
+                if let offlineInteractions {
+                    try await offlineInteractions.setCommentLiked(
+                        mutation.targetIsLiked,
+                        commentID: commentID
                     )
+                } else {
+                    try await repository.setLiked(mutation.targetIsLiked, commentID: commentID)
+                }
+                guard accepts(mutation, level: level), var acceptedPage = pages[level] else { return }
+                if offlineInteractions == nil {
+                    acceptedPage.items = replacingComment(
+                        commentID,
+                        in: acceptedPage.items
+                    ) { comment in
+                        comment.replacingLikeState(
+                            isLiked: mutation.targetIsLiked,
+                            likeCount: comment.likeCount + (mutation.targetIsLiked ? 1 : -1)
+                        )
+                    }
                 }
                 acceptedPage.activeLikeMutation = nil
                 pages[level] = acceptedPage
@@ -222,6 +242,17 @@ final class CommentSessionStore: ObservableObject {
                 return
             } catch {
                 guard accepts(mutation, level: level), var acceptedPage = pages[level] else { return }
+                if offlineInteractions != nil {
+                    acceptedPage.items = replacingComment(
+                        commentID,
+                        in: acceptedPage.items
+                    ) { comment in
+                        comment.replacingLikeState(
+                            isLiked: current.isLiked,
+                            likeCount: current.likeCount
+                        )
+                    }
+                }
                 acceptedPage.activeLikeMutation = nil
                 pages[level] = acceptedPage
                 show(error)
@@ -399,7 +430,7 @@ final class CommentSessionStore: ObservableObject {
                     nextURL: nil
                 )
                 guard accepts(acceptanceKey), var acceptedPage = pages[level] else { return }
-                acceptedPage.items = unique(result.items)
+                acceptedPage.items = applyingPendingLikes(to: unique(result.items))
                 acceptedPage.nextURL = result.nextURL
                 acceptedPage.isEnd = result.isEnd
                 acceptedPage.initialLoad = .loaded
@@ -438,7 +469,9 @@ final class CommentSessionStore: ObservableObject {
                 )
                 guard accepts(acceptanceKey), var acceptedPage = pages[level] else { return }
                 var seen = Set(acceptedPage.items.map(\.id))
-                acceptedPage.items.append(contentsOf: result.items.filter { seen.insert($0.id).inserted })
+                acceptedPage.items.append(contentsOf: applyingPendingLikes(
+                    to: result.items.filter { seen.insert($0.id).inserted }
+                ))
                 acceptedPage.nextURL = result.nextURL
                 acceptedPage.isEnd = result.isEnd
                 acceptedPage.nextPage = .idle
@@ -576,6 +609,30 @@ final class CommentSessionStore: ObservableObject {
     private func unique(_ comments: [CommentDTO]) -> [CommentDTO] {
         var seen = Set<String>()
         return comments.filter { seen.insert($0.id).inserted }
+    }
+
+    private func applyingPendingLikes(to comments: [CommentDTO]) -> [CommentDTO] {
+        guard let offlineInteractions else { return comments }
+        return comments.map { comment in
+            let embedded = applyingPendingLikes(to: comment.embeddedReplies)
+            let projection = offlineInteractions.overlay.commentLike(
+                commentID: comment.id,
+                serverIsLiked: comment.isLiked,
+                serverLikeCount: comment.likeCount
+            )
+            return CommentDTO(
+                id: comment.id,
+                contentHTML: comment.contentHTML,
+                createdTimeSeconds: comment.createdTimeSeconds,
+                author: comment.author,
+                replyToAuthor: comment.replyToAuthor,
+                isLiked: projection.value,
+                likeCount: projection.count,
+                childCommentCount: comment.childCommentCount,
+                embeddedReplies: embedded,
+                media: comment.media
+            )
+        }
     }
 
     private func show(_ error: Error) {

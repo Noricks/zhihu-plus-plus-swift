@@ -16,6 +16,7 @@ enum NativeShellRoute: Hashable {
     case writeAnswer(WriteAnswerRouteDTO)
     case writePin
     case account
+    case offlineReading
     case collections(userToken: String)
     case collectionContent(String)
     case special(String)
@@ -41,6 +42,7 @@ enum NativeShellRoute: Hashable {
         case .writeAnswer: return "write_answer"
         case .writePin: return "write_pin"
         case .account: return "account"
+        case .offlineReading: return "offline_reading"
         case .collections: return "collections"
         case .collectionContent: return "collection_content"
         case .special: return "special"
@@ -278,6 +280,8 @@ struct NativeAppShell: View {
     @ObservedObject private var account: NativeAccountStore
     @ObservedObject private var notifications: NativeNotificationStore
     @ObservedObject private var notificationPreferences: NativeNotificationPreferences
+    @ObservedObject private var offlineInteractions: OfflineInteractionCoordinator
+    @ObservedObject private var flightOfflineStore: FlightOfflinePackStore
 
     @StateObject private var navigation: NativeTabNavigationState
     @StateObject private var recommendationStore: HomeFeedNativeStore
@@ -306,6 +310,8 @@ struct NativeAppShell: View {
         _account = ObservedObject(wrappedValue: hostModel.account)
         _notifications = ObservedObject(wrappedValue: hostModel.notifications)
         _notificationPreferences = ObservedObject(wrappedValue: hostModel.notificationPreferences)
+        _offlineInteractions = ObservedObject(wrappedValue: hostModel.offlineInteractions)
+        _flightOfflineStore = ObservedObject(wrappedValue: hostModel.flightOfflineStore)
         _navigation = StateObject(wrappedValue: NativeTabNavigationState(
             diagnostics: hostModel.performanceDiagnostics.client
         ))
@@ -396,6 +402,7 @@ struct NativeAppShell: View {
             NativeCommentSheetRouteView(
                 route: presentation.route,
                 accountStore: hostModel.accountStore,
+                offlineInteractions: offlineInteractions,
                 onPersonNavigate: { handlePersonIntent($0, in: presentation.sourceTab) }
             )
         }
@@ -414,6 +421,7 @@ struct NativeAppShell: View {
         .onChange(of: scenePhase) { phase in
             switch phase {
             case .active:
+                offlineInteractions.applicationDidBecomeActive()
                 inspectClipboardAfterActivationIfNeeded()
             case .inactive, .background:
                 clipboardInspectionArmed = true
@@ -446,11 +454,17 @@ struct NativeAppShell: View {
                 }
             }
         }
+        .onChange(of: account.currentAccountID) { _ in
+            flightOfflineStore.accountDidChange()
+            offlineInteractions.accountDidChange()
+        }
         .onChange(of: preferences.homeRecommendationSource) { source in
             synchronizeRecommendationSource(source)
         }
         .task {
             if case .loading = account.state { account.reloadFromKeychain() }
+            offlineInteractions.start()
+            await flightOfflineStore.reload()
             fallBackToGuestRecommendationSourceIfNeeded()
             if account.isSignedIn { await notifications.refreshUnreadCounts() }
             SystemNavigationRequestCenter.shared.installHandler(handleSystemNavigation)
@@ -576,7 +590,11 @@ struct NativeAppShell: View {
                 NativeSignedOutLibraryView(title: "登录后查看收藏夹", openLogin: hostModel.openLogin)
             }
         case .account:
-            NativeAccountView(store: account, actions: accountActions)
+            NativeAccountView(
+                store: account,
+                actions: accountActions,
+                offlineReadingStatus: offlineAccountRowStatus
+            )
         case .search:
             SearchNativeView(
                 route: searchRootRoute,
@@ -626,6 +644,7 @@ struct NativeAppShell: View {
                     repository: hostModel.questionAnswerRepository,
                     openedHistory: hostModel.answerOpenedHistory,
                     diagnostics: hostModel.performanceDiagnostics.client,
+                    offlineInteractions: offlineInteractions,
                     onNavigate: { handleQAIntent($0, in: tab) }
                 )
         case let .question(route):
@@ -658,6 +677,7 @@ struct NativeAppShell: View {
             PinNativeView(
                 route: route,
                 repository: hostModel.pinRepository,
+                offlineInteractions: offlineInteractions,
                 onOpenPerson: { navigate(.person($0), in: tab) },
                 onOpenLink: handlePinLink,
                 onOpenComments: {
@@ -674,6 +694,7 @@ struct NativeAppShell: View {
             NativeCommentNavigationRouteView(
                 route: route,
                 accountStore: hostModel.accountStore,
+                offlineInteractions: offlineInteractions,
                 onPersonNavigate: { handlePersonIntent($0, in: tab) }
             )
         case let .search(route):
@@ -704,7 +725,27 @@ struct NativeAppShell: View {
                 onPublished: { navigation.replaceTop(with: .pin(.init(pinID: $0)), in: tab) }
             )
         case .account:
-            NativeAccountView(store: account, actions: accountActions)
+            NativeAccountView(
+                store: account,
+                actions: accountActions,
+                offlineReadingStatus: offlineAccountRowStatus
+            )
+        case .offlineReading:
+            if account.isSignedIn {
+                FlightOfflineReadingView(
+                    store: flightOfflineStore,
+                    pendingInteractionCount: offlineInteractions.overlay.pendingCount,
+                    interactionStatus: offlineInteractionStatus,
+                    onRetryInteractions: offlineInteractions.retryNow,
+                    onOpenQuestion: { navigate(.question($0), in: tab) },
+                    onOpenAnswer: { navigate(.answer($0), in: tab) }
+                )
+            } else {
+                NativeSignedOutLibraryView(
+                    title: "登录后准备离线内容",
+                    openLogin: hostModel.openLogin
+                )
+            }
         case let .collections(token):
             NativeCollectionsView(userToken: token, repository: hostModel.libraryRepository, onOpenContent: openContent)
         case let .collectionContent(id):
@@ -757,6 +798,28 @@ struct NativeAppShell: View {
                 navigate(.person(payload))
             }
         )
+    }
+
+    private var offlineAccountRowStatus: String? {
+        if offlineInteractions.overlay.pendingCount > 0 {
+            return "\(offlineInteractions.overlay.pendingCount) 项待同步"
+        }
+        return flightOfflineStore.accountRowStatus
+    }
+
+    private var offlineInteractionStatus: String? {
+        switch offlineInteractions.state {
+        case .stopped, .idle:
+            return nil
+        case .syncing:
+            return "正在同步点赞和收藏"
+        case .waitingForNetwork:
+            return "等待网络连接；恢复联网后会自动同步。"
+        case let .waitingForRetry(date):
+            return "同步暂未成功，将于 \(date.formatted(date: .omitted, time: .shortened)) 重试。"
+        case let .failed(message):
+            return message
+        }
     }
 
     private func navigate(_ route: NativeShellRoute, in tab: NativeAppTab? = nil) {
@@ -1192,10 +1255,16 @@ private struct NativePersonConnectionsRouteView: View {
 private struct NativeCommentNavigationRouteView: View {
     @StateObject private var model: CommentHostModel
 
-    init(route: CommentThreadRouteDTO, accountStore: AccountJSONStore, onPersonNavigate: @escaping (PersonNavigationIntent) -> Void) {
+    init(
+        route: CommentThreadRouteDTO,
+        accountStore: AccountJSONStore,
+        offlineInteractions: OfflineInteractionCoordinator? = nil,
+        onPersonNavigate: @escaping (PersonNavigationIntent) -> Void
+    ) {
         _model = StateObject(wrappedValue: CommentHostModel(
             route: route,
             accountStore: accountStore,
+            offlineInteractions: offlineInteractions,
             onPersonNavigate: onPersonNavigate
         ))
     }
@@ -1208,10 +1277,16 @@ private struct NativeCommentSheetRouteView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model: CommentHostModel
 
-    init(route: CommentThreadRouteDTO, accountStore: AccountJSONStore, onPersonNavigate: @escaping (PersonNavigationIntent) -> Void) {
+    init(
+        route: CommentThreadRouteDTO,
+        accountStore: AccountJSONStore,
+        offlineInteractions: OfflineInteractionCoordinator? = nil,
+        onPersonNavigate: @escaping (PersonNavigationIntent) -> Void
+    ) {
         _model = StateObject(wrappedValue: CommentHostModel(
             route: route,
             accountStore: accountStore,
+            offlineInteractions: offlineInteractions,
             onPersonNavigate: onPersonNavigate
         ))
     }

@@ -109,6 +109,11 @@
 		0E400000000000000000001 /* KaTeXResourceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E300000000000000000001 /* KaTeXResourceTests.swift */; };
 		0F200000000000000000001 /* NativeContentPosterShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F100000000000000000001 /* NativeContentPosterShare.swift */; };
 		0F200000000000000000002 /* NativeClipboardZhihuLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F100000000000000000002 /* NativeClipboardZhihuLink.swift */; };
+		102000000000000000000001 /* OfflineAPIResponseCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 101000000000000000000001 /* OfflineAPIResponseCache.swift */; };
+		102000000000000000000002 /* OfflineInteractionOutbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 101000000000000000000002 /* OfflineInteractionOutbox.swift */; };
+		102000000000000000000003 /* FlightOfflineFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = 101000000000000000000003 /* FlightOfflineFeature.swift */; };
+		104000000000000000000001 /* OfflineInteractionOutboxTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 103000000000000000000001 /* OfflineInteractionOutboxTests.swift */; };
+		104000000000000000000002 /* FlightOfflineFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 103000000000000000000002 /* FlightOfflineFeatureTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -227,6 +232,11 @@
 		0E300000000000000000001 /* KaTeXResourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KaTeXResourceTests.swift; sourceTree = "<group>"; };
 		0F100000000000000000001 /* NativeContentPosterShare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeContentPosterShare.swift; sourceTree = "<group>"; };
 		0F100000000000000000002 /* NativeClipboardZhihuLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeClipboardZhihuLink.swift; sourceTree = "<group>"; };
+		101000000000000000000001 /* OfflineAPIResponseCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineAPIResponseCache.swift; sourceTree = "<group>"; };
+		101000000000000000000002 /* OfflineInteractionOutbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineInteractionOutbox.swift; sourceTree = "<group>"; };
+		101000000000000000000003 /* FlightOfflineFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlightOfflineFeature.swift; sourceTree = "<group>"; };
+		103000000000000000000001 /* OfflineInteractionOutboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineInteractionOutboxTests.swift; sourceTree = "<group>"; };
+		103000000000000000000002 /* FlightOfflineFeatureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlightOfflineFeatureTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -332,6 +342,9 @@
 				0E100000000000000000002 /* QAKaTeXRenderer.swift */,
 				0F100000000000000000001 /* NativeContentPosterShare.swift */,
 				0F100000000000000000002 /* NativeClipboardZhihuLink.swift */,
+				101000000000000000000001 /* OfflineAPIResponseCache.swift */,
+				101000000000000000000002 /* OfflineInteractionOutbox.swift */,
+				101000000000000000000003 /* FlightOfflineFeature.swift */,
 				0A1B2C3D4E5F600100000013 /* Assets.xcassets */,
 				0A1B2C3D4E5F600100000014 /* Info.plist */,
 				0A1B2C3D4E5F600100000015 /* LaunchScreen.storyboard */,
@@ -378,6 +391,8 @@
 				0B300000000000000000012 /* NativeTranslationAvailabilityTests.swift */,
 				0B300000000000000000013 /* QuestionAnswerFeatureTests.swift */,
 				0E300000000000000000001 /* KaTeXResourceTests.swift */,
+				103000000000000000000001 /* OfflineInteractionOutboxTests.swift */,
+				103000000000000000000002 /* FlightOfflineFeatureTests.swift */,
 			);
 			path = iosAppTests;
 			sourceTree = "<group>";
@@ -555,6 +570,9 @@
 				0E200000000000000000002 /* QAKaTeXRenderer.swift in Sources */,
 				0F200000000000000000001 /* NativeContentPosterShare.swift in Sources */,
 				0F200000000000000000002 /* NativeClipboardZhihuLink.swift in Sources */,
+				102000000000000000000001 /* OfflineAPIResponseCache.swift in Sources */,
+				102000000000000000000002 /* OfflineInteractionOutbox.swift in Sources */,
+				102000000000000000000003 /* FlightOfflineFeature.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -589,6 +607,8 @@
 				0B400000000000000000012 /* NativeTranslationAvailabilityTests.swift in Sources */,
 				0B400000000000000000013 /* QuestionAnswerFeatureTests.swift in Sources */,
 				0E400000000000000000001 /* KaTeXResourceTests.swift in Sources */,
+				104000000000000000000001 /* OfflineInteractionOutboxTests.swift in Sources */,
+				104000000000000000000002 /* FlightOfflineFeatureTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -12,15 +12,33 @@ struct QACollectionsResult: Sendable {
 
 protocol QuestionAnswerRepository: Sendable {
     func fetchQuestion(_ route: QuestionRouteDTO) async throws -> QuestionDTO
+    func fetchQuestion(
+        _ route: QuestionRouteDTO,
+        cachePolicy: ZhihuAPICachePolicy
+    ) async throws -> QuestionDTO
     func fetchQuestionAnswers(
         questionID: Int64,
         sort: QuestionAnswerSort,
         after nextURL: URL?
     ) async throws -> QuestionAnswerPageDTO
+    func fetchQuestionAnswers(
+        questionID: Int64,
+        sort: QuestionAnswerSort,
+        after nextURL: URL?,
+        cachePolicy: ZhihuAPICachePolicy
+    ) async throws -> QuestionAnswerPageDTO
     func setQuestionFollowing(_ following: Bool, questionID: Int64) async throws
     func fetchAnswer(_ route: AnswerRouteDTO) async throws -> AnswerDTO
+    func fetchAnswer(
+        _ route: AnswerRouteDTO,
+        cachePolicy: ZhihuAPICachePolicy
+    ) async throws -> AnswerDTO
     func setVote(_ state: QAVoteState, route: AnswerRouteDTO) async throws -> QAVoteMutationResult
     func fetchCollections(route: AnswerRouteDTO) async throws -> QACollectionsResult
+    func fetchCollections(
+        route: AnswerRouteDTO,
+        cachePolicy: ZhihuAPICachePolicy
+    ) async throws -> QACollectionsResult
     func setCollection(
         _ selected: Bool,
         collectionID: String,
@@ -154,29 +172,37 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
         "content,topics,paid_info,can_comment,excerpt,favlists_count,voteup_count,comment_count,visited_count,relationship,ip_info,relationship.vote,author.badge_v2"
 
     private let client: ZhihuAPIClient
-    private let decoder: JSONDecoder
+    private let readCachePolicy: ZhihuAPICachePolicy
 
-    init(client: ZhihuAPIClient) {
+    init(
+        client: ZhihuAPIClient,
+        readCachePolicy: ZhihuAPICachePolicy = .offlineFallback
+    ) {
         self.client = client
-        decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        self.readCachePolicy = readCachePolicy
     }
 
     func fetchQuestion(_ route: QuestionRouteDTO) async throws -> QuestionDTO {
+        try await fetchQuestion(route, cachePolicy: readCachePolicy)
+    }
+
+    func fetchQuestion(
+        _ route: QuestionRouteDTO,
+        cachePolicy: ZhihuAPICachePolicy
+    ) async throws -> QuestionDTO {
         let url = try endpoint(
             path: "/api/v4/questions/\(route.questionID)",
             query: [URLQueryItem(name: "include", value: Self.questionInclude)]
         )
-        let data = try await client.data(for: url, authentication: .accountRequired)
-        do {
-            let question = try decoder.decode(QuestionResponse.self, from: data).dto()
-            guard question.id == route.questionID else {
-                throw QuestionAnswerRepositoryError.malformedQuestion
+        let data = try await client.data(
+            for: url,
+            authentication: .accountRequired,
+            cachePolicy: cachePolicy,
+            cacheValidation: { data in
+                try Self.validateQuestionCacheData(data, route: route)
             }
-            return question
-        } catch {
-            throw QuestionAnswerRepositoryError.malformedQuestion
-        }
+        )
+        return try Self.decodeQuestion(data, route: route)
     }
 
     func fetchQuestionAnswers(
@@ -184,9 +210,23 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
         sort: QuestionAnswerSort,
         after nextURL: URL?
     ) async throws -> QuestionAnswerPageDTO {
+        try await fetchQuestionAnswers(
+            questionID: questionID,
+            sort: sort,
+            after: nextURL,
+            cachePolicy: readCachePolicy
+        )
+    }
+
+    func fetchQuestionAnswers(
+        questionID: Int64,
+        sort: QuestionAnswerSort,
+        after nextURL: URL?,
+        cachePolicy: ZhihuAPICachePolicy
+    ) async throws -> QuestionAnswerPageDTO {
         let url: URL
         if let nextURL {
-            let validated = try continuation(
+            let validated = try Self.continuation(
                 nextURL,
                 requiredPrefix: "/api/v4/questions/\(questionID)/feeds"
             )
@@ -214,27 +254,15 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
                 ]
             )
         }
-        let data = try await client.data(for: url, authentication: .accountRequired)
-        do {
-            let response = try decoder.decode(QuestionAnswersResponse.self, from: data)
-            var seen = Set<Int64>()
-            let items = response.data
-                .compactMap(\.value)
-                .compactMap(\.answerPreview)
-                .filter { $0.questionID == questionID && seen.insert($0.answerID).inserted }
-            let continuationURL = try response.paging?.next.flatMap(URL.init(string:)).map {
-                try continuation($0, requiredPrefix: "/api/v4/questions/\(questionID)/feeds")
+        let data = try await client.data(
+            for: url,
+            authentication: .accountRequired,
+            cachePolicy: cachePolicy,
+            cacheValidation: { data in
+                try Self.validateQuestionAnswerPageCacheData(data, questionID: questionID)
             }
-            return QuestionAnswerPageDTO(
-                items: items,
-                nextURL: continuationURL,
-                isEnd: response.paging?.isEnd == true || continuationURL == nil
-            )
-        } catch let error as QuestionAnswerRepositoryError {
-            throw error
-        } catch {
-            throw QuestionAnswerRepositoryError.malformedAnswerPage
-        }
+        )
+        return try Self.decodeQuestionAnswerPage(data, questionID: questionID)
     }
 
     func setQuestionFollowing(_ following: Bool, questionID: Int64) async throws {
@@ -247,25 +275,26 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
     }
 
     func fetchAnswer(_ route: AnswerRouteDTO) async throws -> AnswerDTO {
+        try await fetchAnswer(route, cachePolicy: readCachePolicy)
+    }
+
+    func fetchAnswer(
+        _ route: AnswerRouteDTO,
+        cachePolicy: ZhihuAPICachePolicy
+    ) async throws -> AnswerDTO {
         let path = route.kind == .answer
             ? "/api/v4/answers/\(route.contentID)"
             : "/api/v4/articles/\(route.contentID)"
         let include = route.kind == .answer ? Self.answerInclude : Self.articleInclude
         let data = try await client.data(
             for: endpoint(path: path, query: [URLQueryItem(name: "include", value: include)]),
-            authentication: .accountRequired
-        )
-        do {
-            switch route.kind {
-            case .answer:
-                let response = try decoder.decode(AnswerResponse.self, from: data)
-                return try response.dto(route: route)
-            case .article:
-                return try decoder.decode(ArticleResponse.self, from: data).dto(route: route)
+            authentication: .accountRequired,
+            cachePolicy: cachePolicy,
+            cacheValidation: { data in
+                try Self.validateAnswerCacheData(data, route: route)
             }
-        } catch {
-            throw QuestionAnswerRepositoryError.malformedContent
-        }
+        )
+        return try Self.decodeAnswer(data, route: route)
     }
 
     func recordReadHistory(contentToken: String, contentType: String) async {
@@ -297,15 +326,140 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
     }
 
     func fetchCollections(route: AnswerRouteDTO) async throws -> QACollectionsResult {
+        try await fetchCollections(route: route, cachePolicy: readCachePolicy)
+    }
+
+    func fetchCollections(
+        route: AnswerRouteDTO,
+        cachePolicy: ZhihuAPICachePolicy
+    ) async throws -> QACollectionsResult {
         let type = route.kind.rawValue
         let url = try apiEndpoint(
             host: "api.zhihu.com",
             path: "/collections/contents/\(type)/\(route.contentID)",
             query: [URLQueryItem(name: "limit", value: "50")]
         )
-        let data = try await client.data(for: url, authentication: .accountRequired)
+        let data = try await client.data(
+            for: url,
+            authentication: .accountRequired,
+            cachePolicy: cachePolicy,
+            cacheValidation: { data in
+                try Self.validateCollectionsCacheData(data)
+            }
+        )
+        return try Self.decodeCollections(data)
+    }
+
+    private static func decodeQuestion(
+        _ data: Data,
+        route: QuestionRouteDTO
+    ) throws -> QuestionDTO {
         do {
-            let response = try decoder.decode(CollectionsResponse.self, from: data)
+            let question = try makeDecoder().decode(QuestionResponse.self, from: data).dto()
+            guard question.id == route.questionID else {
+                throw QuestionAnswerRepositoryError.malformedQuestion
+            }
+            return question
+        } catch {
+            throw QuestionAnswerRepositoryError.malformedQuestion
+        }
+    }
+
+    private static func validateQuestionCacheData(
+        _ data: Data,
+        route: QuestionRouteDTO
+    ) throws {
+        do {
+            let response = try makeDecoder().decode(QuestionResponse.self, from: data)
+            guard Int64(response.id.value) == route.questionID else {
+                throw QuestionAnswerRepositoryError.malformedQuestion
+            }
+        } catch {
+            throw QuestionAnswerRepositoryError.malformedQuestion
+        }
+    }
+
+    private static func decodeQuestionAnswerPage(
+        _ data: Data,
+        questionID: Int64
+    ) throws -> QuestionAnswerPageDTO {
+        do {
+            let response = try makeDecoder().decode(QuestionAnswersResponse.self, from: data)
+            var seen = Set<Int64>()
+            let items = response.data
+                .compactMap(\.value)
+                .compactMap(\.answerPreview)
+                .filter { $0.questionID == questionID && seen.insert($0.answerID).inserted }
+            let continuationURL = try response.paging?.next.flatMap(URL.init(string:)).map {
+                try continuation($0, requiredPrefix: "/api/v4/questions/\(questionID)/feeds")
+            }
+            return QuestionAnswerPageDTO(
+                items: items,
+                nextURL: continuationURL,
+                isEnd: response.paging?.isEnd == true || continuationURL == nil
+            )
+        } catch let error as QuestionAnswerRepositoryError {
+            throw error
+        } catch {
+            throw QuestionAnswerRepositoryError.malformedAnswerPage
+        }
+    }
+
+    private static func validateQuestionAnswerPageCacheData(
+        _ data: Data,
+        questionID: Int64
+    ) throws {
+        do {
+            let response = try makeDecoder().decode(QuestionAnswersResponse.self, from: data)
+            if let rawNext = response.paging?.next,
+               let nextURL = URL(string: rawNext) {
+                _ = try continuation(
+                    nextURL,
+                    requiredPrefix: "/api/v4/questions/\(questionID)/feeds"
+                )
+            }
+        } catch let error as QuestionAnswerRepositoryError {
+            throw error
+        } catch {
+            throw QuestionAnswerRepositoryError.malformedAnswerPage
+        }
+    }
+
+    private static func decodeAnswer(_ data: Data, route: AnswerRouteDTO) throws -> AnswerDTO {
+        do {
+            switch route.kind {
+            case .answer:
+                return try makeDecoder().decode(AnswerResponse.self, from: data).dto(route: route)
+            case .article:
+                return try makeDecoder().decode(ArticleResponse.self, from: data).dto(route: route)
+            }
+        } catch {
+            throw QuestionAnswerRepositoryError.malformedContent
+        }
+    }
+
+    private static func validateAnswerCacheData(_ data: Data, route: AnswerRouteDTO) throws {
+        do {
+            switch route.kind {
+            case .answer:
+                let response = try makeDecoder().decode(AnswerResponse.self, from: data)
+                guard Int64(response.id.value) == route.contentID,
+                      Int64(response.question.id.value) != nil
+                else { throw QuestionAnswerRepositoryError.malformedContent }
+            case .article:
+                let response = try makeDecoder().decode(ArticleResponse.self, from: data)
+                guard Int64(response.id.value) == route.contentID else {
+                    throw QuestionAnswerRepositoryError.malformedContent
+                }
+            }
+        } catch {
+            throw QuestionAnswerRepositoryError.malformedContent
+        }
+    }
+
+    private static func decodeCollections(_ data: Data) throws -> QACollectionsResult {
+        do {
+            let response = try makeDecoder().decode(CollectionsResponse.self, from: data)
             let items = response.data.compactMap(\.value).map(\.dto)
             guard response.data.isEmpty || !items.isEmpty else {
                 throw QuestionAnswerRepositoryError.malformedCollections
@@ -317,6 +471,23 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
         } catch {
             throw QuestionAnswerRepositoryError.malformedCollections
         }
+    }
+
+    private static func validateCollectionsCacheData(_ data: Data) throws {
+        do {
+            let response = try makeDecoder().decode(CollectionsResponse.self, from: data)
+            guard response.data.isEmpty || response.data.contains(where: { $0.value != nil }) else {
+                throw QuestionAnswerRepositoryError.malformedCollections
+            }
+        } catch {
+            throw QuestionAnswerRepositoryError.malformedCollections
+        }
+    }
+
+    private static func makeDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return decoder
     }
 
     func setCollection(
@@ -358,7 +529,7 @@ actor URLSessionQuestionAnswerRepository: QuestionAnswerRepository {
         return url
     }
 
-    private func continuation(_ source: URL, requiredPrefix: String) throws -> URL {
+    private static func continuation(_ source: URL, requiredPrefix: String) throws -> URL {
         let url: URL
         do {
             guard let validated = try ZhihuAPIURLPolicy.validatedPagingURL(source) else {
