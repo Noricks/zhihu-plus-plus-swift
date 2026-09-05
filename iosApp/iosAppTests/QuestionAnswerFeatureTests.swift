@@ -811,13 +811,19 @@ final class QuestionAnswerFeatureTests: XCTestCase {
         let repository = makeRepository()
 
         let answer = try await repository.fetchAnswer(
-            AnswerRouteDTO(contentID: 42, kind: .answer, questionID: 7)
+            AnswerRouteDTO(
+                contentID: 42,
+                kind: .answer,
+                questionID: 7,
+                prefersCachedResponse: true
+            )
         )
 
         XCTAssertEqual(answer.title, "原生问题")
         XCTAssertEqual(answer.author.displayName, "作者")
         XCTAssertEqual(answer.voteState, .up)
         XCTAssertEqual(answer.favoriteState, .unknown)
+        XCTAssertTrue(answer.route.prefersCachedResponse)
         XCTAssertEqual(answer.ipLocation, "江苏")
         XCTAssertEqual(answer.endorsements.first?.text, "周刊收录")
         XCTAssertEqual(answer.endorsements.first?.actionURL?.path, "/column/c_1533471233991028736")

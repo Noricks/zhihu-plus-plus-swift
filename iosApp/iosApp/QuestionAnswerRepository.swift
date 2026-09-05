@@ -799,7 +799,8 @@ private struct AnswerResponse: Decodable {
                 kind: .answer,
                 questionID: questionID,
                 provisionalTitle: question.title,
-                source: route.source
+                source: route.source,
+                prefersCachedResponse: route.prefersCachedResponse
             ),
             title: question.title,
             questionID: questionID,
@@ -844,7 +845,8 @@ private struct ArticleResponse: Decodable {
                 contentID: contentID,
                 kind: .article,
                 provisionalTitle: title,
-                source: route.source
+                source: route.source,
+                prefersCachedResponse: route.prefersCachedResponse
             ),
             title: title,
             questionID: nil,
